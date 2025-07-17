@@ -1,0 +1,7 @@
+<!--?xml version="1.0" encoding="UTF-8"?-->
+<svg width="160" height="46" viewBox="0 0 160 46" xmlns="http://www.w3.org/2000/svg">
+  <rect width="160" height="46" rx="8" fill="#5E2E91"></rect>
+  <text x="25" y="30" font-family="Inter, sans-serif" font-size="26" font-weight="700" fill="#FFFFFF">WB</text>
+  <circle cx="112" cy="23" r="18" fill="#3FB950"></circle>
+  <text x="105" y="31" font-family="Inter, sans-serif" font-size="20" font-weight="700" fill="#FFFFFF">6</text>
+</svg>

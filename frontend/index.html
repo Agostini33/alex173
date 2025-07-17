@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Умный переписыватель карточек WB | WB6</title>
+<link rel="icon" href="logo-wb6.svg">
+<link rel="preconnect" href="https://fonts.gstatic.com"><style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+*{box-sizing:border-box;margin:0}body{font-family:Inter,Arial,sans-serif;background:#f8f6ff;color:#2B2B2B}
+.hero{display:flex;flex-direction:column;align-items:center;text-align:center;padding:60px 16px}
+.hero h1{font-size:32px;margin:16px 0 8px}
+.hero h2{font-weight:400;color:#555;margin:0 0 32px;font-size:20px;max-width:480px}
+button.cta{background:#5E2E91;color:#fff;border:none;padding:16px 32px;border-radius:8px;font-size:20px;cursor:pointer}
+section{max-width:900px;margin:56px auto;padding:0 16px}
+.steps ol{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:24px;padding:0;list-style:none}
+.steps li{background:#fff;border-radius:12px;padding:24px;box-shadow:0 4px 16px rgba(0,0,0,.06)}
+.pricing{display:flex;gap:24px;flex-wrap:wrap;justify-content:center}
+.plan{background:#fff;border-radius:12px;padding:24px 32px;text-align:center;width:240px;box-shadow:0 4px 16px rgba(0,0,0,.06)}
+input,textarea{width:100%;padding:12px;border:1px solid #ccc;border-radius:6px;margin:8px 0 16px;font-size:16px}
+#res{white-space:pre-wrap;background:#F5F5F7;padding:16px;border-radius:8px;display:none}
+footer{margin:56px 0;text-align:center;font-size:14px;color:#666}
+</style>
+</head><body>
+
+<div class="hero">
+  <img src="logo-wb6.svg" alt="WB6" width="160">
+  <h1>Умный переписыватель карточек Wildberries</h1>
+  <h2>Замените 2&nbsp;часа рутины одним кликом.<br>
+      Получите SEO-заголовок, 6 буллитов и 20 ключей за 5 секунд.</h2>
+  <button class="cta" onclick="document.getElementById('try').scrollIntoView({behavior:'smooth'})">
+      Попробовать бесплатно 3 карточки
+  </button>
+</div>
+
+<section class="steps">
+  <h2>Как это работает</h2>
+  <ol>
+    <li>1. Вставьте описание или ссылку на карточку</li>
+    <li>2. Выберите площадку (Wildberries / Ozon)</li>
+    <li>3. Получите заголовок, буллиты и CSV-ключи</li>
+  </ol>
+</section>
+
+<section id="try">
+  <h2>Попробуйте сейчас</h2>
+  <input id="src" placeholder="Описание товара или ссылка на карточку">
+  <select id="mp"><option>Wildberries</option><option>Ozon</option></select>
+  <button class="cta" id="run">Сгенерировать</button>
+  <pre id="res"></pre>
+</section>
+
+<section class="pricing">
+  <div class="plan"><h3>Free</h3><p>3 переписи</p><b>0 ₽</b></div>
+  <div class="plan"><h3>Старт</h3><p>15 переписей</p><b>199 ₽</b></div>
+  <div class="plan"><h3>Pro</h3><p>60 / мес</p><b>499 ₽</b></div>
+</section>
+
+<footer>
+  Политика конфиденциальности | Договор-оферта | © 2024 WB6
+</footer>
+
+<script>
+const $=s=>document.querySelector(s);
+let token = localStorage.getItem('wb6_jwt')||'';
+
+$('#run').onclick = async ()=>{
+  const prompt=$('#src').value.trim(); if(!prompt) return;
+  $('#run').disabled=true; $('#run').textContent='Генерирую…';
+  const r = await fetch('https://api.wb6.ru/rewrite',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+    body:JSON.stringify({supplierId:0,prompt})
+  });
+  const js = await r.json();
+  if(js.error==='NO_CREDITS'){ location='pay.html'; return;}
+  if(js.token){ token=js.token; localStorage.setItem('wb6_jwt',token);}
+  $('#res').textContent=JSON.stringify(js,null,2);
+  $('#res').style.display='block';
+  $('#run').disabled=false; $('#run').textContent='Сгенерировать';
+};
+</script>
+</body></html>
+

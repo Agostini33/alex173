@@ -1,0 +1,30 @@
+<!doctype html><html lang="ru"><head>
+<meta charset="utf-8"><title>Оплата WB6</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+<style>body{font-family:Inter,Arial,sans-serif;text-align:center;padding-top:60px}</style>
+</head><body>
+<h2>Оплатите пакет переписей</h2>
+
+<form id="pay15" action="https://auth.robokassa.ru/Merchant/Index.aspx" method="POST">
+  <input name="MrchLogin" value="WB6">
+  <input name="OutSum" value="199">
+  <input name="InvId"  value="0">
+  <input name="Desc"   value="15 rewrite">
+  <input name="Email"  placeholder="e-mail для токена" required>
+  <input name="Shp_plan" value="15">
+  <input name="SignatureValue">
+  <button>Оплатить 199 ₽</button>
+</form>
+
+<script>
+const PASS1 = "pass1";   // замените на пароль#1 из кабинета
+document.querySelectorAll('form').forEach(f=>{
+  f.addEventListener('submit', e=>{
+    const sum=f.OutSum.value, inv=f.InvId.value, email=f.Email.value;
+    const str=`${f.MrchLogin.value}:${sum}:${inv}:${PASS1}:Shp_plan=${f.Shp_plan.value}`;
+    f.SignatureValue.value=CryptoJS.MD5(str).toString();
+  });
+});
+</script>
+</body></html>
+
