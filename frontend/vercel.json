@@ -1,9 +1,16 @@
 {
   "redirects": [
     {
-      "source": "https://www.wb6.ru/:path*",
+      "source": "/:path*",
+      "has": [
+        {
+          "type": "host",
+          "value": "www.wb6.ru"
+        }
+      ],
       "destination": "https://wb6.ru/:path*",
       "permanent": true
     }
   ]
 }
+
