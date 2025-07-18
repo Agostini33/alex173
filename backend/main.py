@@ -4,7 +4,8 @@ from pydantic import BaseModel
 import os, openai, hashlib, jwt, datetime, json, requests
 from bs4 import BeautifulSoup
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# OpenAI client (allow empty key for tests)
+client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
 PASS2  = os.getenv("ROBOKASSA_PASS2", "pass2")
 SECRET = os.getenv("JWT_SECRET",  "wb6secret")   # сгенерируйте:  python - <<EOF
                                                  # import secrets,base64,os,sys,hashlib,json
@@ -81,11 +82,14 @@ async def rewrite(r:Req, request:Request):
     prompt = r.prompt.strip()
     if prompt.startswith("http") and "wildberries.ru" in prompt:
         prompt = wb_text(prompt)
-    comp = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[{"role":"system","content":PROMPT},
-                  {"role":"user","content":prompt}]
-    )
+    try:
+        comp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role":"system","content":PROMPT},
+                      {"role":"user","content":prompt}]
+        )
+    except Exception as e:
+        return {"error": str(e)}
     info["quota"] -= 1
     return {"token": jwt.encode(info, SECRET, "HS256"),
             **json.loads(comp.choices[0].message.content)}
