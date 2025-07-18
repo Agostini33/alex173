@@ -1,0 +1,9 @@
+{
+  "redirects": [
+    {
+      "source": "https://www.wb6.ru/:path*",
+      "destination": "https://wb6.ru/:path*",
+      "permanent": true
+    }
+  ]
+}
