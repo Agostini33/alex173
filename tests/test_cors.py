@@ -24,3 +24,19 @@ def test_wb6_origins_allowed(origin):
     )
     assert resp.status_code == 200
     assert resp.headers.get("access-control-allow-origin") == origin
+
+def test_env_cors_origin():
+    os.environ["CORS_ORIGINS"] = "http://example.com"
+    import importlib
+    import main
+    importlib.reload(main)
+    cli = TestClient(main.app)
+    resp = cli.options(
+        "/rewrite",
+        headers={
+            "Origin": "http://example.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-origin") == "http://example.com"

@@ -27,15 +27,19 @@ PROMPT = """
 app = FastAPI()
 
 # ── CORS ──────────────────────────────────────
+origins = [
+    "https://wb6.ru",
+    "http://wb6.ru",
+    "https://www.wb6.ru",
+    "http://www.wb6.ru",
+    "https://wb6.vercel.app",
+]
+extra = os.getenv("CORS_ORIGINS", "")
+origins.extend([o.strip() for o in extra.split(",") if o.strip()])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://wb6.ru",
-        "http://wb6.ru",
-        "https://www.wb6.ru",
-        "http://www.wb6.ru",
-        "https://wb6.vercel.app",
-    ],
+    allow_origins=origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
