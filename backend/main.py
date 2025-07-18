@@ -28,7 +28,13 @@ app = FastAPI()
 # ── CORS ──────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://wb6.ru", "https://wb6.vercel.app"],
+    allow_origins=[
+        "https://wb6.ru",
+        "http://wb6.ru",
+        "https://www.wb6.ru",
+        "http://www.wb6.ru",
+        "https://wb6.vercel.app",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )

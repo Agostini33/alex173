@@ -3,4 +3,5 @@ uvicorn
 openai
 python-dotenv
 PyJWT
+httpx<0.28
 
