@@ -1,5 +1,8 @@
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backend'))
+# Ensure required env vars for import
+os.environ.setdefault("OPENAI_API_KEY", "test-key")
+os.environ.setdefault("ENV", "DEV")
 from fastapi.testclient import TestClient
 from main import app
 import pytest

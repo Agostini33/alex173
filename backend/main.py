@@ -1,14 +1,35 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import os, openai, hashlib, jwt, datetime, json, requests
+import os, openai, hashlib, jwt, datetime, json, requests, logging, secrets
 from bs4 import BeautifulSoup
 
-# OpenAI client (allow empty key for tests)
-client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
-PASS2  = os.getenv("ROBOKASSA_PASS2", "pass2")
-SECRET = os.getenv("JWT_SECRET",  "wb6secret")   # сгенерируйте:  python - <<EOF
-                                                 # import secrets,base64,os,sys,hashlib,json
+# ============================
+# 🔐 Загрузка секретов из env
+# ============================
+
+ENV = os.getenv("ENV", "DEV").upper()
+PROD = ENV == "PRODUCTION"
+
+# ✅ OpenAI API Key (обязательно: без него переписывание не работает)
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_KEY:
+    raise ValueError("❌ OPENAI_API_KEY не установлен. Укажите его в Railway/GitHub Secrets.")
+client = openai.OpenAI(api_key=OPENAI_KEY)
+
+# ✅ Robokassa Pass2 (используется для подписи callback'ов)
+PASS2 = os.getenv("ROBOKASSA_PASS2")
+if not PASS2:
+    logging.warning("ROBOKASSA_PASS2 не установлен: оплата отключена")
+    if not PROD:
+        PASS2 = "dev-pass2"
+
+# ✅ JWT-секрет (подписывает access-токены на клиенте)
+SECRET = os.getenv("JWT_SECRET")
+if not SECRET:
+    logging.warning("JWT_SECRET не установлен")
+    if not PROD:
+        SECRET = secrets.token_hex(16)
 
 PROMPT = """
 Ты опытный SEO-копирайтер маркетплейса Wildberries.
