@@ -1,7 +1,8 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import os, openai, hashlib, jwt, datetime, json
+import os, openai, hashlib, jwt, datetime, json, requests
+from bs4 import BeautifulSoup
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 PASS2  = os.getenv("ROBOKASSA_PASS2", "pass2")
@@ -52,6 +53,16 @@ def verify(tok:str):
     try: return jwt.decode(tok, SECRET, algorithms=["HS256"])
     except: return None
 
+def wb_text(url:str) -> str:
+    """Return meta description from a Wildberries product page."""
+    try:
+        html = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10).text
+        soup = BeautifulSoup(html, "html.parser")
+        meta = soup.find("meta", {"name": "description"})
+        return meta["content"] if meta else url
+    except Exception:
+        return url
+
 # ── API ───────────────────────────────────────
 class Req(BaseModel):
     supplierId:int
@@ -63,10 +74,13 @@ async def rewrite(r:Req, request:Request):
     if not info: info = {"sub":"anon","quota":3}   # 3 free
     if info["quota"]<=0:
         return {"error":"NO_CREDITS"}
+    prompt = r.prompt.strip()
+    if prompt.startswith("http") and "wildberries.ru" in prompt:
+        prompt = wb_text(prompt)
     comp = openai.ChatCompletion.create(
         model="gpt-4o-mini",
         messages=[{"role":"system","content":PROMPT},
-                  {"role":"user","content":r.prompt}]
+                  {"role":"user","content":prompt}]
     )
     info["quota"] -= 1
     return {"token": jwt.encode(info, SECRET, "HS256"),

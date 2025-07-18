@@ -46,6 +46,7 @@ footer{margin:56px 0;text-align:center;font-size:14px;color:#666}
   <input id="src" placeholder="Описание товара или ссылка на карточку">
   <select id="mp"><option>Wildberries</option><option>Ozon</option></select>
   <button class="cta" id="run">Сгенерировать</button>
+  <div id="quota" style="margin-top:8px;color:#555"></div>
   <pre id="res"></pre>
 </section>
 
@@ -63,6 +64,14 @@ footer{margin:56px 0;text-align:center;font-size:14px;color:#666}
 const $=s=>document.querySelector(s);
 let token = localStorage.getItem('wb6_jwt')||'';
 
+function showQuota(){
+  if(!token) return;
+  try{ const q=JSON.parse(atob(token.split('.')[1])).quota;
+       $('#quota').textContent='Осталось переписей: '+q; }
+  catch(e){ console.error(e); }
+}
+showQuota();
+
 $('#run').onclick = async ()=>{
   const prompt=$('#src').value.trim(); if(!prompt) return;
   $('#run').disabled=true; $('#run').textContent='Генерирую…';
@@ -73,7 +82,7 @@ $('#run').onclick = async ()=>{
   });
   const js = await r.json();
   if(js.error==='NO_CREDITS'){ location='pay.html'; return;}
-  if(js.token){ token=js.token; localStorage.setItem('wb6_jwt',token);}
+  if(js.token){ token=js.token; localStorage.setItem('wb6_jwt',token); showQuota(); }
   $('#res').textContent=JSON.stringify(js,null,2);
   $('#res').style.display='block';
   $('#run').disabled=false; $('#run').textContent='Сгенерировать';
