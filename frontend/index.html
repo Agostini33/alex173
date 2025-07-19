@@ -11,6 +11,9 @@
 .hero h1{font-size:32px;margin:16px 0 8px}
 .hero h2{font-weight:400;color:#555;margin:0 0 32px;font-size:20px;max-width:480px}
 button.cta{background:#5E2E91;color:#fff;border:none;padding:16px 32px;border-radius:8px;font-size:20px;cursor:pointer}
+button#clear{background:#c62828;color:#fff;border:none;padding:16px 32px;border-radius:8px;font-size:20px;cursor:pointer;margin-left:8px;display:none}
+.field-header{display:flex;align-items:center;gap:8px;margin-top:16px}
+.copy-btn{margin-left:8px;font-size:14px;padding:4px 8px}
 section{max-width:900px;margin:56px auto;padding:0 16px}
 .steps ol{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:24px;padding:0;list-style:none}
 .steps li{background:#fff;border-radius:12px;padding:24px;box-shadow:0 4px 16px rgba(0,0,0,.06)}
@@ -46,13 +49,14 @@ footer{margin:56px 0;text-align:center;font-size:14px;color:#666}
   <input id="src" placeholder="Описание товара или ссылка на карточку">
   <select id="mp"><option>Wildberries</option><option>Ozon</option></select>
   <button class="cta" id="run">Сгенерировать</button>
+  <button id="clear">Очистить</button>
   <div id="quota" style="margin-top:8px;color:#555"></div>
   <div id="res">
-    <h3>Заголовок</h3>
+    <div class="field-header"><h3>Заголовок</h3><button class="copy-btn" data-target="res-title">Копировать</button></div>
     <textarea id="res-title" rows="2" readonly></textarea>
-    <h3>Буллиты</h3>
+    <div class="field-header"><h3>Буллиты</h3><button class="copy-btn" data-target="res-bullets">Копировать</button></div>
     <textarea id="res-bullets" rows="6" readonly></textarea>
-    <h3>Ключевые слова (CSV)</h3>
+    <div class="field-header"><h3>Ключевые слова (CSV)</h3><button class="copy-btn" data-target="res-keys">Копировать</button></div>
     <textarea id="res-keys" rows="4" readonly></textarea>
   </div>
 </section>
@@ -78,6 +82,27 @@ function showQuota(){
   catch(e){ console.error(e); }
 }
 showQuota();
+
+const src=$('#src');
+const clear=$('#clear');
+src.addEventListener('input',()=>{
+  clear.style.display=src.value?'inline-block':'none';
+});
+clear.onclick=()=>{
+  src.value='';
+  clear.style.display='none';
+  $('#res').style.display='none';
+  src.focus();
+};
+
+document.querySelectorAll('.copy-btn').forEach(btn=>{
+  btn.onclick=()=>{
+    const t=document.getElementById(btn.dataset.target);
+    navigator.clipboard.writeText(t.value);
+    btn.textContent='Скопировано';
+    setTimeout(()=>btn.textContent='Копировать',1000);
+  };
+});
 
 $('#run').onclick = async ()=>{
   const prompt=$('#src').value.trim(); if(!prompt) return;
