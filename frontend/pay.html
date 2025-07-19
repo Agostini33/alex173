@@ -5,26 +5,52 @@
 </head><body>
 <h2>Оплатите пакет переписываний</h2>
 
-<form id="pay15" action="https://auth.robokassa.ru/Merchant/Index.aspx" method="POST">
-  <input name="MrchLogin" value="WB6">
-  <input name="OutSum" value="199">
-  <input name="InvId"  value="0">
-  <input name="Desc"   value="15 rewrite">
-  <input name="Email"  placeholder="e-mail для токена" required>
-  <input name="Shp_plan" value="15">
-  <input name="SignatureValue">
-  <button>Оплатить 199 ₽</button>
+<form id="pay" action="https://auth.robokassa.ru/Merchant/Index.aspx" method="POST">
+  <input type="hidden" name="MrchLogin" value="WB6">
+  <input type="hidden" name="OutSum">
+  <input type="hidden" name="InvId">
+  <input type="hidden" name="Desc">
+  <input type="email" name="Email" placeholder="Ваш e-mail" required>
+  <input type="hidden" name="Shp_plan">
+  <input type="hidden" name="SignatureValue">
+  <label>Тариф:
+    <select id="plan">
+      <option value="15" data-price="199">15 переписываний – 199 ₽</option>
+      <option value="60" data-price="499">60 переписываний – 499 ₽</option>
+    </select>
+  </label>
+  <button>Оплатить</button>
 </form>
 
 <script>
 const PASS1 = "pass1";   // замените на пароль#1 из кабинета
-document.querySelectorAll('form').forEach(f=>{
-  f.addEventListener('submit', e=>{
-    const sum=f.OutSum.value, inv=f.InvId.value, email=f.Email.value;
-    const str=`${f.MrchLogin.value}:${sum}:${inv}:${PASS1}:Shp_plan=${f.Shp_plan.value}`;
-    f.SignatureValue.value=CryptoJS.MD5(str).toString();
-  });
+const form = document.getElementById('pay');
+form.addEventListener('submit', e => {
+  const plan = document.getElementById('plan');
+  const price = plan.options[plan.selectedIndex].dataset.price;
+  const inv = Date.now();
+  form.OutSum.value = price;
+  form.InvId.value = inv;
+  form.Desc.value = plan.value + ' rewrite';
+  form.Shp_plan.value = plan.value;
+  form.action = 'https://auth.robokassa.ru/Merchant/Index.aspx?SuccessURL=' +
+    encodeURIComponent(location.origin + '/pay.html?InvId=' + inv);
+  const str = `${form.MrchLogin.value}:${price}:${inv}:${PASS1}:Shp_plan=${plan.value}`;
+  form.SignatureValue.value = CryptoJS.MD5(str).toString();
 });
+
+// автозагрузка токена после оплаты
+const params = new URLSearchParams(location.search);
+if (params.get('InvId')) {
+  fetch('https://api.wb6.ru/paytoken?inv=' + params.get('InvId'))
+    .then(r => r.json())
+    .then(js => {
+      if (js.token) {
+        localStorage.setItem('wb6_jwt', js.token);
+        location = 'index.html';
+      }
+    });
+}
 </script>
 </body></html>
 

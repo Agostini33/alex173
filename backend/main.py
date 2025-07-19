@@ -31,6 +31,11 @@ if not SECRET:
     if not PROD:
         SECRET = secrets.token_hex(16)
 
+# in-memory storage for payment tokens and accounts
+TOKENS = {}
+ACCOUNTS = {}
+LOGIN_INDEX = {}
+
 PROMPT = """
 Ты опытный SEO-копирайтер маркетплейса Wildberries.
 Тебе дают исходный текст карточки товара. Сгенерируй:
@@ -79,6 +84,19 @@ def verify(tok:str):
     try: return jwt.decode(tok, SECRET, algorithms=["HS256"])
     except: return None
 
+def send_email(to:str, login:str, password:str):
+    logging.info(f"Email to {to}: login={login} password={password}")
+
+def create_account(email:str, quota:int, inv:str):
+    login = secrets.token_hex(4)
+    password = secrets.token_hex(4)
+    ACCOUNTS[email] = {"login": login, "password": password, "quota": quota}
+    LOGIN_INDEX[login] = email
+    token = issue(email, quota)
+    TOKENS[inv] = token
+    send_email(email, login, password)
+    return token
+
 def wb_text(url:str) -> str:
     """Return meta description from a Wildberries product page."""
     try:
@@ -112,6 +130,8 @@ async def rewrite(r:Req, request:Request):
     except Exception as e:
         return {"error": str(e)}
     info["quota"] -= 1
+    if info["sub"] in ACCOUNTS:
+        ACCOUNTS[info["sub"]]["quota"] = info["quota"]
     return {"token": jwt.encode(info, SECRET, "HS256"),
             **json.loads(comp.choices[0].message.content)}
 
@@ -122,7 +142,28 @@ async def payhook(req:Request):
     crc = hashlib.md5(f"{f['InvId']}:{f['OutSum']}:{PASS2}:shp={f['Shp_plan']}".encode()).hexdigest().upper()
     if crc != f['SignatureValue'].upper(): return "bad sign"
     quota = 15 if f['Shp_plan']=="15" else 60
-    token = issue(f.get("Email","user@wb6"), quota)
-    # TODO: отправить письмо с token
+    email = f.get("Email", "user@wb6")
+    create_account(email, quota, f['InvId'])
     return "OK"
+
+class LoginReq(BaseModel):
+    login:str
+    password:str
+
+@app.post("/login")
+async def login(r:LoginReq):
+    email = LOGIN_INDEX.get(r.login)
+    if not email:
+        return {"error":"AUTH_FAILED"}
+    acc = ACCOUNTS.get(email)
+    if acc and acc["password"] == r.password:
+        return {"token": issue(email, acc["quota"])}
+    return {"error":"AUTH_FAILED"}
+
+@app.get("/paytoken")
+async def paytoken(inv:int):
+    tok = TOKENS.pop(str(inv), None)
+    if tok:
+        return {"token": tok}
+    return {"error":"NOT_READY"}
 
