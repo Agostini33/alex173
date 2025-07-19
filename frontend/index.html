@@ -17,7 +17,7 @@ section{max-width:900px;margin:56px auto;padding:0 16px}
 .pricing{display:flex;gap:24px;flex-wrap:wrap;justify-content:center}
 .plan{background:#fff;border-radius:12px;padding:24px 32px;text-align:center;width:240px;box-shadow:0 4px 16px rgba(0,0,0,.06)}
 input,textarea{width:100%;padding:12px;border:1px solid #ccc;border-radius:6px;margin:8px 0 16px;font-size:16px}
-#res{white-space:pre-wrap;background:#F5F5F7;padding:16px;border-radius:8px;display:none}
+#res{background:#F5F5F7;padding:16px;border-radius:8px;display:none}
 footer{margin:56px 0;text-align:center;font-size:14px;color:#666}
 </style>
 </head><body>
@@ -47,12 +47,19 @@ footer{margin:56px 0;text-align:center;font-size:14px;color:#666}
   <select id="mp"><option>Wildberries</option><option>Ozon</option></select>
   <button class="cta" id="run">Сгенерировать</button>
   <div id="quota" style="margin-top:8px;color:#555"></div>
-  <pre id="res"></pre>
+  <div id="res">
+    <h3>Заголовок</h3>
+    <textarea id="res-title" rows="2" readonly></textarea>
+    <h3>Буллиты</h3>
+    <textarea id="res-bullets" rows="6" readonly></textarea>
+    <h3>Ключевые слова (CSV)</h3>
+    <textarea id="res-keys" rows="2" readonly></textarea>
+  </div>
 </section>
 
 <section class="pricing">
-  <div class="plan"><h3>Free</h3><p>3 переписи</p><b>0 ₽</b></div>
-  <div class="plan"><h3>Старт</h3><p>15 переписей</p><b>199 ₽</b></div>
+  <div class="plan"><h3>Free</h3><p>3 переписывания</p><b>0 ₽</b></div>
+  <div class="plan"><h3>Старт</h3><p>15 переписываний</p><b>199 ₽</b></div>
   <div class="plan"><h3>Pro</h3><p>60 / мес</p><b>499 ₽</b></div>
 </section>
 
@@ -67,7 +74,7 @@ let token = localStorage.getItem('wb6_jwt')||'';
 function showQuota(){
   if(!token) return;
   try{ const q=JSON.parse(atob(token.split('.')[1])).quota;
-       $('#quota').textContent='Осталось переписей: '+q; }
+       $('#quota').textContent='Осталось переписываний: '+q; }
   catch(e){ console.error(e); }
 }
 showQuota();
@@ -83,8 +90,12 @@ $('#run').onclick = async ()=>{
   const js = await r.json();
   if(js.error==='NO_CREDITS'){ location='pay.html'; return;}
   if(js.token){ token=js.token; localStorage.setItem('wb6_jwt',token); showQuota(); }
-  $('#res').textContent=JSON.stringify(js,null,2);
-  $('#res').style.display='block';
+  if(js.title){
+    $('#res-title').value=js.title;
+    $('#res-bullets').value=(js.bullets||[]).join('\n');
+    $('#res-keys').value=(js.keywords||[]).join(', ');
+    $('#res').style.display='block';
+  }
   $('#run').disabled=false; $('#run').textContent='Сгенерировать';
 };
 </script>
