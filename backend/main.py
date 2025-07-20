@@ -139,13 +139,14 @@ async def rewrite(r:Req, request:Request):
 @app.post("/payhook")
 async def payhook(req:Request):
     f = await req.form()
-    crc_str = f"{f['OutSum']}:{f['InvId']}:{PASS2}:Shp_plan={f['Shp_plan']}"
+    inv = f.get("InvId") or f.get("InvoiceID")
+    crc_str = f"{f['OutSum']}:{inv}:{PASS2}:Shp_plan={f['Shp_plan']}"
     crc = hashlib.md5(crc_str.encode()).hexdigest().upper()
     if crc != f['SignatureValue'].upper():
         return "bad sign"
     quota = 15 if f['Shp_plan']=="15" else 60
     email = f.get("Email", "user@wb6")
-    create_account(email, quota, f['InvId'])
+    create_account(email, quota, inv)
     return "OK"
 
 class LoginReq(BaseModel):

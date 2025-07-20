@@ -35,14 +35,16 @@ form.onsubmit = e => {
   const params = new URLSearchParams({
     MerchantLogin: LOGIN,
     OutSum: price,
-    InvId: inv,
+    InvoiceID: inv,
     Description: desc,
     SignatureValue: sig,
     Email: document.getElementById('email').value,
     Shp_plan: plan.value,
-    SuccessURL: location.origin + '/pay.html?InvId=' + inv
+    Culture: 'ru',
+    Encoding: 'utf-8',
+    SuccessURL: location.origin + '/pay.html?InvoiceID=' + inv
   });
-  const url = 'https://auth.robokassa.ru/Merchant/PaymentForm/FormMS.if?' + params.toString();
+  const url = 'https://auth.robokassa.ru/Merchant/Index.aspx?' + params.toString();
   location.href = url;
 };
 
