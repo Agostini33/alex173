@@ -22,30 +22,47 @@
 </form>
 <script>
 const PASS1 = "EyQbM1TFm6uOp6l6JEi2"; // пароль#1 из кабинета
-const LOGIN = "wb6.ru"; // Merchant ID
+const LOGIN = "wb6.ru"; // MrchLogin
 const form = document.getElementById('pay');
 form.onsubmit = e => {
   e.preventDefault();
+
   const plan = document.getElementById('plan');
+  const email = document.getElementById('email').value;
   const price = plan.options[plan.selectedIndex].dataset.price;
   const inv = Date.now();
   const desc = plan.value + ' rewrite';
+
   const crcStr = `${LOGIN}:${price}:${inv}:${PASS1}:Shp_plan=${plan.value}`;
-  const sig = CryptoJS.MD5(crcStr).toString().toUpperCase();
-  const params = new URLSearchParams({
-    MerchantLogin: LOGIN,
+  const sig = CryptoJS.MD5(crcStr).toString();
+
+  const paymentForm = document.createElement('form');
+  paymentForm.method = 'POST';
+  paymentForm.action = 'https://auth.robokassa.ru/Merchant/Index.aspx';
+
+  const params = {
+    MrchLogin: LOGIN,
     OutSum: price,
-    InvoiceID: inv,
-    Description: desc,
+    InvId: inv,
+    Desc: desc,
     SignatureValue: sig,
-    Email: document.getElementById('email').value,
+    Email: email,
     Shp_plan: plan.value,
     Culture: 'ru',
     Encoding: 'utf-8',
-    SuccessURL: location.origin + '/pay.html?InvoiceID=' + inv
-  });
-  const url = 'https://auth.robokassa.ru/Merchant/Index.aspx?' + params.toString();
-  location.href = url;
+    SuccessURL: location.origin + '/pay.html?InvId=' + inv
+  };
+
+  for (const [key, value] of Object.entries(params)) {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = key;
+    input.value = value;
+    paymentForm.appendChild(input);
+  }
+
+  document.body.appendChild(paymentForm);
+  paymentForm.submit();
 };
 
 // автозагрузка токена после оплаты

@@ -14,8 +14,8 @@ def test_payhook_crc(monkeypatch):
     app = reload_main().app
     from fastapi.testclient import TestClient
     client = TestClient(app)
-    data = {'InvoiceID': '1', 'OutSum': '199', 'Shp_plan': '15'}
-    crc_str = f"{data['OutSum']}:{data['InvoiceID']}:pass2:Shp_plan=15"
+    data = {'InvId': '1', 'OutSum': '199', 'Shp_plan': '15'}
+    crc_str = f"{data['OutSum']}:{data['InvId']}:pass2:Shp_plan=15"
     data['SignatureValue'] = hashlib.md5(crc_str.encode()).hexdigest().upper()
     resp = client.post('/payhook', data=data)
     assert resp.json() == 'OK'
