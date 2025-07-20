@@ -68,6 +68,8 @@ form.onsubmit = e => {
   }
 
   document.body.appendChild(paymentForm);
+  // DEBUG: вывод параметров перед отправкой формы
+  console.log({crcStr, sig, ...params});
   paymentForm.submit();
 };
 
