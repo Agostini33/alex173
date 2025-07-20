@@ -43,11 +43,9 @@ form.onsubmit = e => {
     Shp_plan: plan.value,
     SuccessURL: location.origin + '/pay.html?InvId=' + inv
   });
-  const s = document.createElement('script');
-  s.src = 'https://auth.robokassa.ru/Merchant/PaymentForm/FormMS.js?' + params.toString();
   const container = document.getElementById('rbk');
-  container.innerHTML = '';
-  container.appendChild(s);
+  const url = 'https://auth.robokassa.ru/Merchant/PaymentForm/FormMS.if?' + params.toString();
+  container.innerHTML = `<iframe width="304" height="82" style="border:0;width:304px;height:82px;overflow:hidden;background-color:transparent;" allowTransparency="true" src="${url}"></iframe>`;
 };
 
 // автозагрузка токена после оплаты
