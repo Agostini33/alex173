@@ -1,0 +1,33 @@
+name: Collect Socials
+on:
+  workflow_dispatch:
+    inputs:
+      keyword:
+        description: 'Keyword for seller search'
+        required: true
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install tqdm
+      - name: Search seller ids
+        run: python utils/search_scraper.py --query "${{ github.event.inputs.keyword }}" --output raw_sellers.csv
+      - name: Collect social links
+        run: python utils/social_scraper.py --input raw_sellers.csv --output socials.csv
+      - name: Validate result
+        run: |
+          python - <<'PY'
+import csv, sys
+rows=list(csv.DictReader(open('socials.csv', encoding='utf-8')))
+count=sum(1 for r in rows if r.get('telegram') or r.get('whatsapp'))
+print('rows with contacts:', count)
+if count<=0:
+    sys.exit('No contacts found')
+PY
