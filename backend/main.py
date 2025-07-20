@@ -140,7 +140,10 @@ async def rewrite(r:Req, request:Request):
 async def payhook(req:Request):
     f = await req.form()
     inv = f.get("InvId") or f.get("InvoiceID")
-    crc_str = f"{f['OutSum']}:{inv}:{PASS2}:Shp_plan={f['Shp_plan']}"
+    # Collect and sort all Shp_* parameters alphabetically for CRC
+    shp_params = {k: f[k] for k in f.keys() if k.startswith('Shp_')}
+    shp_part = ':'.join(f"{k}={shp_params[k]}" for k in sorted(shp_params))
+    crc_str = f"{f['OutSum']}:{inv}:{PASS2}:{shp_part}"
     crc = hashlib.md5(crc_str.encode()).hexdigest().upper()
     if crc != f['SignatureValue'].upper():
         return "bad sign"

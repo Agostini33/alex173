@@ -33,7 +33,13 @@ form.onsubmit = e => {
   const inv = Date.now();
   const desc = plan.value + ' rewrite';
 
-  const crcStr = `${LOGIN}:${price}:${inv}:${PASS1}:Shp_plan=${plan.value}`;
+  // Sort all Shp_* params before signing as required by Robokassa
+  const shpParams = { Shp_plan: plan.value };
+  const shpPart = Object.keys(shpParams)
+    .sort()
+    .map(k => `${k}=${shpParams[k]}`)
+    .join(':');
+  const crcStr = `${LOGIN}:${price}:${inv}:${PASS1}:${shpPart}`;
   const sig = CryptoJS.MD5(crcStr).toString();
 
   const paymentForm = document.createElement('form');
