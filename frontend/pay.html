@@ -6,7 +6,7 @@
 <h2>Оплатите пакет переписываний</h2>
 
 <form id="pay" action="https://auth.robokassa.ru/Merchant/Index.aspx" method="POST">
-  <input type="hidden" name="MrchLogin" value="WB6">
+  <input type="hidden" name="MrchLogin" value="wb.ru">
   <input type="hidden" name="OutSum">
   <input type="hidden" name="InvId">
   <input type="hidden" name="Desc">
@@ -23,7 +23,7 @@
 </form>
 
 <script>
-const PASS1 = "pass1";   // замените на пароль#1 из кабинета
+const PASS1 = "EyQbM1TFm6uOp6l6JEi2";   // замените на пароль#1 из кабинета
 const form = document.getElementById('pay');
 form.addEventListener('submit', e => {
   const plan = document.getElementById('plan');
