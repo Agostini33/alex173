@@ -1,48 +1,59 @@
-<!doctype html><html lang="ru"><head>
-<meta charset="utf-8"><title>Оплата WB6</title>
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Оплата WB6</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
-<style>body{font-family:Inter,Arial,sans-serif;text-align:center;padding-top:60px}</style>
-</head><body>
+<style>
+  body{font-family:Inter,Arial,sans-serif;text-align:center;padding-top:60px}
+</style>
+</head>
+<body>
 <h2>Оплатите пакет переписываний</h2>
-
-<form id="pay" action="https://auth.robokassa.ru/Merchant/Index.aspx" method="POST">
-  <input type="hidden" name="MrchLogin" value="wb.ru">
-  <input type="hidden" name="OutSum">
-  <input type="hidden" name="InvId">
-  <input type="hidden" name="Desc">
-  <input type="email" name="Email" placeholder="Ваш e-mail" required>
-  <input type="hidden" name="Shp_plan">
-  <input type="hidden" name="SignatureValue">
+<form id="pay">
+  <input type="email" id="email" placeholder="Ваш e-mail" required>
   <label>Тариф:
     <select id="plan">
       <option value="15" data-price="199">15 переписываний – 199 ₽</option>
       <option value="60" data-price="499">60 переписываний – 499 ₽</option>
     </select>
   </label>
-  <button>Оплатить</button>
+  <button type="submit">Получить счёт</button>
 </form>
-
+<div id="rbk"></div>
 <script>
-const PASS1 = "EyQbM1TFm6uOp6l6JEi2";   // замените на пароль#1 из кабинета
+const PASS1 = "EyQbM1TFm6uOp6l6JEi2"; // замените на пароль#1 из кабинета
+const LOGIN = "wb.ru";
 const form = document.getElementById('pay');
-form.addEventListener('submit', e => {
+form.onsubmit = e => {
+  e.preventDefault();
   const plan = document.getElementById('plan');
   const price = plan.options[plan.selectedIndex].dataset.price;
   const inv = Date.now();
-  form.OutSum.value = price;
-  form.InvId.value = inv;
-  form.Desc.value = plan.value + ' rewrite';
-  form.Shp_plan.value = plan.value;
-  form.action = 'https://auth.robokassa.ru/Merchant/Index.aspx?SuccessURL=' +
-    encodeURIComponent(location.origin + '/pay.html?InvId=' + inv);
-  const str = `${form.MrchLogin.value}:${price}:${inv}:${PASS1}:Shp_plan=${plan.value}`;
-  form.SignatureValue.value = CryptoJS.MD5(str).toString().toUpperCase();
-});
+  const desc = plan.value + ' rewrite';
+  const crcStr = `${LOGIN}:${price}:${inv}:${PASS1}:Shp_plan=${plan.value}`;
+  const sig = CryptoJS.MD5(crcStr).toString().toUpperCase();
+  const params = new URLSearchParams({
+    MerchantLogin: LOGIN,
+    OutSum: price,
+    InvoiceID: inv,
+    Description: desc,
+    SignatureValue: sig,
+    Email: document.getElementById('email').value,
+    Shp_plan: plan.value,
+    SuccessURL: location.origin + '/pay.html?InvId=' + inv
+  });
+  const s = document.createElement('script');
+  s.src = 'https://auth.robokassa.ru/Merchant/PaymentForm/FormMS.js?' + params.toString();
+  const container = document.getElementById('rbk');
+  container.innerHTML = '';
+  container.appendChild(s);
+};
 
 // автозагрузка токена после оплаты
-const params = new URLSearchParams(location.search);
-if (params.get('InvId')) {
-  fetch('https://api.wb6.ru/paytoken?inv=' + params.get('InvId'))
+const q = new URLSearchParams(location.search);
+if (q.get('InvId')) {
+  fetch('https://api.wb6.ru/paytoken?inv=' + q.get('InvId'))
     .then(r => r.json())
     .then(js => {
       if (js.token) {
@@ -52,5 +63,5 @@ if (params.get('InvId')) {
     });
 }
 </script>
-</body></html>
-
+</body>
+</html>
