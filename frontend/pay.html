@@ -68,9 +68,9 @@ form.onsubmit = e => {
   }
 
   document.body.appendChild(paymentForm);
-  // DEBUG: вывод параметров перед отправкой формы
+  // DEBUG: удалить задержку и лог перед релизом
   console.log({crcStr, sig, ...params});
-  paymentForm.submit();
+  setTimeout(() => paymentForm.submit(), 200);
 };
 
 // автозагрузка токена после оплаты
