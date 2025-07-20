@@ -18,12 +18,11 @@
       <option value="60" data-price="499">60 переписываний – 499 ₽</option>
     </select>
   </label>
-  <button type="submit">Получить счёт</button>
+  <button type="submit">Оплатить</button>
 </form>
-<div id="rbk"></div>
 <script>
-const PASS1 = "EyQbM1TFm6uOp6l6JEi2"; // замените на пароль#1 из кабинета
-const LOGIN = "wb.ru";
+const PASS1 = "EyQbM1TFm6uOp6l6JEi2"; // пароль#1 из кабинета
+const LOGIN = "wb.6"; // Merchant ID
 const form = document.getElementById('pay');
 form.onsubmit = e => {
   e.preventDefault();
@@ -36,16 +35,15 @@ form.onsubmit = e => {
   const params = new URLSearchParams({
     MerchantLogin: LOGIN,
     OutSum: price,
-    InvoiceID: inv,
+    InvId: inv,
     Description: desc,
     SignatureValue: sig,
     Email: document.getElementById('email').value,
     Shp_plan: plan.value,
     SuccessURL: location.origin + '/pay.html?InvId=' + inv
   });
-  const container = document.getElementById('rbk');
   const url = 'https://auth.robokassa.ru/Merchant/PaymentForm/FormMS.if?' + params.toString();
-  container.innerHTML = `<iframe width="304" height="82" style="border:0;width:304px;height:82px;overflow:hidden;background-color:transparent;" allowTransparency="true" src="${url}"></iframe>`;
+  location.href = url;
 };
 
 // автозагрузка токена после оплаты
