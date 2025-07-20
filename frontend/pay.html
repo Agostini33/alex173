@@ -36,7 +36,7 @@ form.addEventListener('submit', e => {
   form.action = 'https://auth.robokassa.ru/Merchant/Index.aspx?SuccessURL=' +
     encodeURIComponent(location.origin + '/pay.html?InvId=' + inv);
   const str = `${form.MrchLogin.value}:${price}:${inv}:${PASS1}:Shp_plan=${plan.value}`;
-  form.SignatureValue.value = CryptoJS.MD5(str).toString();
+  form.SignatureValue.value = CryptoJS.MD5(str).toString().toUpperCase();
 });
 
 // автозагрузка токена после оплаты
