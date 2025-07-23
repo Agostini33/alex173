@@ -67,3 +67,15 @@ WB6 — это веб-сервис, который с помощью OpenAI пе
 - [ ] Task#3: unit test for Robokassa signature
 - [ ] Task#4: cron daily-report → Telegram
 - [ ] Task#5: add usage endpoint `/usage`
+
+## Сбор контактов
+
+1. Запустите поиск продавцов:
+   ```bash
+   python utils/search_scraper.py --query "шапка" --pages 3 --output raw_sellers.csv
+   ```
+2. Для каждого supplier_id подтяните соцсети:
+   ```bash
+   python utils/social_scraper.py --input raw_sellers.csv --output contacts.csv
+   ```
+   Итоговый `contacts.csv` содержит столбцы `supplier_id`, `telegram`, `whatsapp`.
