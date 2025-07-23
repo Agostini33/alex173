@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""
-search_scraper.py  –  собирает seller_id по ключевому слову (Wildberries search API)
-пример:
+"""search_scraper.py
+Собирает supplier_id по ключевому слову через Wildberries search API.
+Версия: 2025-07-22
+
+Пример запуска:
     python search_scraper.py --query "шапка" --pages 10 --output raw_sellers.csv
 """
 

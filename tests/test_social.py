@@ -7,8 +7,11 @@ class FakeResp:
         self.text = text
 
 def test_social_links(monkeypatch, tmp_path):
-    html = '<a href="https://t.me/test">tg</a> <a href="https://wa.me/123">wa</a>'
-    monkeypatch.setattr(ss.S, 'get', lambda url: FakeResp(html))
+    html = (
+        '<a href="https://t.me/testseller">tg</a> '
+        '<a href="https://wa.me/71234567890">wa</a>'
+    )
+    monkeypatch.setattr(ss.requests, "get", lambda url, **kw: FakeResp(html))
     monkeypatch.setattr(ss.time, 'sleep', lambda x: None)
     input_csv = tmp_path / 'raw.csv'
     with open(input_csv, 'w', newline='', encoding='utf-8') as f:
@@ -19,5 +22,5 @@ def test_social_links(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, 'argv', argv)
     ss.main()
     rows = list(csv.DictReader(open(output_csv, encoding='utf-8')))
-    assert rows[0]['telegram'] == 'https://t.me/test'
-    assert rows[0]['whatsapp'] == 'https://wa.me/123'
+    assert rows[0]['telegram'] == 'https://t.me/testseller'
+    assert rows[0]['whatsapp'] == 'https://wa.me/71234567890'
