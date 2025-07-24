@@ -87,3 +87,12 @@ python utils/social_scraper.py --input raw_sellers.csv --output socials.csv
 ```
 
 `socials.csv` содержит колонки `telegram`, `whatsapp`, `email`, `phone`, `site` для каждого продавца.
+
+### Сбор контактов v2
+
+```bash
+# Быстрый (только описания товаров)
+python social_scraper.py --input raw.csv --output socials.csv
+# Полный (до 100 JS-рендеров)
+python social_scraper.py --input raw.csv --output socials.csv --render-limit 100
+```
