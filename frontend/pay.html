@@ -23,6 +23,7 @@
 <script>
 const PASS1 = "EyQbM1TFm6uOp6l6JEi2"; // пароль#1 из кабинета
 const LOGIN = "wb6.ru"; // MrchLogin
+const TEST_MODE = !location.hostname.match(/^wb6\.ru$/);
 const form = document.getElementById('pay');
 form.onsubmit = e => {
   e.preventDefault();
@@ -58,6 +59,7 @@ form.onsubmit = e => {
     Encoding: 'utf-8',
     SuccessURL: location.origin + '/pay.html?InvId=' + inv
   };
+  if (TEST_MODE) params.IsTest = 1; // Robokassa sandbox → убираем IsTest на prod
 
   for (const [key, value] of Object.entries(params)) {
     const input = document.createElement('input');
