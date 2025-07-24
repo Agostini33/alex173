@@ -7,24 +7,41 @@ import social_scraper as ss
 
 
 class FakeResp:
-    def __init__(self, text):
+    def __init__(self, js=None, text=""):
+        self._js = js
         self.text = text
+        self.ok = True
+
+    def json(self):
+        return self._js
 
 
 def test_social_links(monkeypatch, tmp_path):
-    html = '<a href="https://t.me/test">tg</a> <a href="https://wa.me/123">wa</a> <a href="mailto:test@mail.ru">e</a> <span>+79001234567</span>'
-    monkeypatch.setattr(ss.S, "get", lambda url: FakeResp(html))
+    js = {
+        "data": {"products": [{"description": "call +79991234567 or test@mail.ru"}]}
+    }
+    monkeypatch.setattr(
+        ss.SESSION, "get", lambda url, params, timeout: FakeResp(js)
+    )
+    monkeypatch.setattr(ss, "render_and_parse", lambda url: {})
     monkeypatch.setattr(ss.time, "sleep", lambda x: None)
     input_csv = tmp_path / "raw.csv"
     with open(input_csv, "w", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow(["supplier_id"])
-        csv.writer(f).writerow(["1"])
+        writer = csv.DictWriter(
+            f, fieldnames=["supplier_id", "articul", "link"]
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "supplier_id": "1",
+                "articul": "10",
+                "link": "http://example.com",
+            }
+        )
     output_csv = tmp_path / "out.csv"
     argv = ["social_scraper.py", "--input", str(input_csv), "--output", str(output_csv)]
     monkeypatch.setattr(sys, "argv", argv)
     ss.main()
     rows = list(csv.DictReader(open(output_csv, encoding="utf-8")))
-    assert rows[0]["telegram"] == "https://t.me/test"
-    assert rows[0]["whatsapp"] == "https://wa.me/123"
     assert rows[0]["email"] == "test@mail.ru"
-    assert rows[0]["phone"] == "+79001234567"
+    assert rows[0]["phone"] == "+79991234567"
