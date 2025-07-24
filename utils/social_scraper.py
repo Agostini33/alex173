@@ -22,17 +22,25 @@ def main():
     ap.add_argument('--output',default='socials.csv')
     ap.add_argument('--delay',type=float,default=.15)
     a=ap.parse_args()
-    rows=list(csv.DictReader(open(a.input,newline='',encoding='utf-8')))
-    fn=list(rows[0].keys())+['telegram','whatsapp']
+    with open(a.input, newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        fn = (reader.fieldnames or []) + ['telegram', 'whatsapp']
+    if not rows:
+        # nothing to scrape, create empty output with header
+        csv.DictWriter(open(a.output, 'w', newline='', encoding='utf-8'), fieldnames=fn).writeheader()
+        print("Done:", a.output)
+        return
     for r in tqdm(rows):
         try:
             h=S.get(f"https://www.wildberries.ru/seller/{r['supplier_id']}").text
             r['telegram'],r['whatsapp']=parse(h)
         except: r['telegram']=r['whatsapp']=''
         time.sleep(a.delay)
-    csv.DictWriter(open(a.output,'w',newline='',encoding='utf-8'),fieldnames=fn)\
-        .writeheader(); csv.writer(open(a.output,'a',newline='',encoding='utf-8'))\
-        .writerows([r.values() for r in rows])
+    with open(a.output, 'w', newline='', encoding='utf-8') as f:
+        w = csv.DictWriter(f, fieldnames=fn)
+        w.writeheader()
+        w.writerows(rows)
     print("Done:",a.output)
 if __name__=='__main__': main()
 
