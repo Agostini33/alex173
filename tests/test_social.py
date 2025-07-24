@@ -18,18 +18,24 @@ class FakeResp:
 
 def test_social_links(monkeypatch, tmp_path):
     js = {
-        "data": {"products": [{"description": "call +79991234567 or test@mail.ru"}]}
+        "data": {
+            "products": [{"description": "call +7 (926) 123-45-67 or test@mail.ru"}]
+        }
     }
-    monkeypatch.setattr(
-        ss.SESSION, "get", lambda url, params, timeout: FakeResp(js)
-    )
-    monkeypatch.setattr(ss, "render_and_parse", lambda url: {})
-    monkeypatch.setattr(ss.time, "sleep", lambda x: None)
+    monkeypatch.setattr(ss.SESSION, "get", lambda url, params, timeout: FakeResp(js))
+
+    async def fake_render(url, page):
+        return {}
+
+    monkeypatch.setattr(ss, "render_and_parse", fake_render)
+
+    async def fake_sleep(x):
+        return None
+
+    monkeypatch.setattr(ss.asyncio, "sleep", fake_sleep)
     input_csv = tmp_path / "raw.csv"
     with open(input_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f, fieldnames=["supplier_id", "articul", "link"]
-        )
+        writer = csv.DictWriter(f, fieldnames=["supplier_id", "articul", "link"])
         writer.writeheader()
         writer.writerow(
             {
@@ -44,4 +50,4 @@ def test_social_links(monkeypatch, tmp_path):
     ss.main()
     rows = list(csv.DictReader(open(output_csv, encoding="utf-8")))
     assert rows[0]["email"] == "test@mail.ru"
-    assert rows[0]["phone"] == "+79991234567"
+    assert rows[0]["phone"] == "+79261234567"
