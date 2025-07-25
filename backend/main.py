@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import os, openai, hashlib, jwt, datetime, json, requests, logging, secrets
+import os, openai, hashlib, jwt, datetime, json, requests, logging, secrets, sqlite3
 from bs4 import BeautifulSoup
 
 # ============================
@@ -35,6 +35,37 @@ if not SECRET:
 TOKENS = {}
 ACCOUNTS = {}
 LOGIN_INDEX = {}
+
+# ── persistent storage for tokens and invoice counter ──
+DB_PATH = os.getenv("TOKENS_DB", os.path.join(os.path.dirname(__file__), "tokens.db"))
+DB = sqlite3.connect(DB_PATH, check_same_thread=False)
+DB.execute("CREATE TABLE IF NOT EXISTS tokens (inv TEXT PRIMARY KEY, token TEXT)")
+DB.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+DB.commit()
+
+def store_token(inv: str, token: str):
+    with DB:
+        DB.execute("INSERT OR REPLACE INTO tokens(inv, token) VALUES(?, ?)", (str(inv), token))
+
+def fetch_token(inv: str) -> str | None:
+    cur = DB.execute("SELECT token FROM tokens WHERE inv=?", (str(inv),))
+    row = cur.fetchone()
+    if row:
+        with DB:
+            DB.execute("DELETE FROM tokens WHERE inv=?", (str(inv),))
+        return row[0]
+    return None
+
+def next_inv_id() -> int:
+    with DB:
+        cur = DB.execute("SELECT value FROM meta WHERE key='last_inv'")
+        row = cur.fetchone()
+        last = int(row[0]) if row else 2999
+        nxt = last + 1
+        if nxt > 2147483647:
+            nxt = 3000
+        DB.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('last_inv', ?)", (str(nxt),))
+    return nxt
 
 PROMPT = """
 Ты опытный SEO-копирайтер маркетплейса Wildberries.
@@ -94,6 +125,7 @@ def create_account(email:str, quota:int, inv:str):
     LOGIN_INDEX[login] = email
     token = issue(email, quota)
     TOKENS[inv] = token
+    store_token(inv, token)
     send_email(email, login, password)
     return token
 
@@ -166,9 +198,15 @@ async def login(r:LoginReq):
         return {"token": issue(email, acc["quota"])}
     return {"error":"AUTH_FAILED"}
 
+@app.get("/next_inv")
+async def get_next_inv():
+    return {"inv": next_inv_id()}
+
 @app.get("/paytoken")
 async def paytoken(inv:int):
-    tok = TOKENS.pop(str(inv), None)
+    tok = fetch_token(str(inv))
+    if not tok:
+        tok = TOKENS.pop(str(inv), None)
     if tok:
         return {"token": tok}
     return {"error":"NOT_READY"}

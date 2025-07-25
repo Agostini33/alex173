@@ -25,13 +25,13 @@ const PASS1 = "EyQbM1TFm6uOp6l6JEi2"; // пароль#1 из кабинета
 const LOGIN = "wb6.ru"; // MrchLogin
 const TEST_MODE = !location.hostname.match(/^wb6\.ru$/);
 const form = document.getElementById('pay');
-form.onsubmit = e => {
+form.onsubmit = async e => {
   e.preventDefault();
 
   const plan = document.getElementById('plan');
   const email = document.getElementById('email').value;
   const price = plan.options[plan.selectedIndex].dataset.price;
-  const inv = Date.now();
+  const inv = (await fetch('https://api.wb6.ru/next_inv').then(r => r.json())).inv;
   const desc = plan.value + ' rewrite';
 
   // Sort all Shp_* params before signing as required by Robokassa
