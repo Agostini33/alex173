@@ -15,7 +15,10 @@ class DummyScraper:
     async def get(self, url, headers=None, timeout=10):
         return ""
 
-sys.modules['aiocfscrape'] = types.SimpleNamespace(AsyncCloudflareScraper=DummyScraper)
+async def create_scraper():
+    return DummyScraper()
+
+sys.modules['aiocfscrape'] = types.SimpleNamespace(create_scraper=create_scraper)
 import social_scraper as ss
 
 
