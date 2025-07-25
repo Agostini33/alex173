@@ -96,3 +96,15 @@ python social_scraper.py --input raw.csv --output socials.csv
 # Полный (до 100 JS-рендеров)
 python social_scraper.py --input raw.csv --output socials.csv --render-limit 100
 ```
+
+## Сбор контактов v3
+
+Новая версия использует ИНН продавца. Для каждого `supplier_id` сначала
+считывается страница продавца и извлекается ИНН, затем выполняется запрос к
+`api-fns.ru` и при отсутствии данных парсится страница
+`zachestnyibiznes.ru`. Результат сохраняется в `socials.csv` с колонками
+`inn`, `email`, `phone`, `telegram`, `whatsapp`, `site`.
+
+```bash
+python utils/social_scraper.py --input raw_sellers.csv --output socials.csv
+```
