@@ -3,6 +3,19 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "utils"))
+import types
+
+class DummyScraper:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        pass
+
+    async def get(self, url, headers=None, timeout=10):
+        return ""
+
+sys.modules['aiocfscrape'] = types.SimpleNamespace(AsyncCloudflareScraper=DummyScraper)
 import social_scraper as ss
 
 
@@ -16,22 +29,14 @@ class FakeResp:
 
 
 def test_social_scraper(monkeypatch, tmp_path):
-    def fake_get(url, timeout=10):
-        if "wildberries.ru" in url:
-            return FakeResp(text="ИНН: 1234567890")
-        if "api-fns.ru" in url:
-            js = {
-                "items": [
-                    {
-                        "СвКонтактДл": [{"Телефон": "+7 (926) 123-45-67"}],
-                        "СвАдресЮЛ": {"ЭлПочта": "test@mail.ru"},
-                    }
-                ]
-            }
-            return FakeResp(js=js)
-        raise AssertionError("unexpected url")
+    async def fake_get_inn_cf(sid: str, scraper):
+        return "1234567890"
 
-    monkeypatch.setattr(ss.SESSION, "get", lambda url, timeout=10: fake_get(url, timeout))
+    async def fake_query_fns(session, inn: str):
+        return "+7 (926) 123-45-67", "test@mail.ru"
+
+    monkeypatch.setattr(ss, "get_inn_cf", fake_get_inn_cf)
+    monkeypatch.setattr(ss, "query_fns", fake_query_fns)
 
     inp = tmp_path / "raw.csv"
     with open(inp, "w", newline="", encoding="utf-8") as f:
