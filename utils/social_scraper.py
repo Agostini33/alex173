@@ -46,7 +46,7 @@ async def fetch(session:aiohttp.ClientSession, url:str, timeout:int=15)->str:
 async def get_inn_cf(sid:str, scraper)->str:
     url = f'https://www.wildberries.ru/seller/{sid}'
     try:
-        html = await scraper.get(url, headers=HEADERS, timeout=15)
+        html = await (await scraper.get(url, headers=HEADERS, timeout=15)).text()
         m = INN_RE.search(html)
         return m.group(1) if m else ''
     except Exception:
@@ -98,7 +98,7 @@ async def run(args):
     sem = asyncio.Semaphore(args.concurrency)
     state = {'fns':0}
 
-    async with aiohttp.ClientSession() as session, aiocfscrape.AsyncCloudflareScraper() as scraper:
+    async with aiohttp.ClientSession() as session, await aiocfscrape.create_scraper() as scraper:
         tasks = [process(r, session, scraper, sem, args, state) for r in rows]
         done  = await tqdm.gather(*tasks, ncols=80, desc='Scraping')
 
