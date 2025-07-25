@@ -4,3 +4,4 @@ tqdm>=4.66
 simplejson
 aiohttp>=3.9
 async_timeout
+aiocfscrape>=0.5

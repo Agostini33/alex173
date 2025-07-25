@@ -1,171 +1,124 @@
 #!/usr/bin/env python3
 """
-social_scraper.py  —  контакты продавцов Wildberries
-▪н собирает supplier_id  →  ИНН  →  API-ФНС / ZCB  →  phone, e-mail, site, mессенджеры
-▪н асинхронные HTTP-запросы через aiohttp (конкуренция регулируется)
-▪н опционально рендерит страницу продавца одним экземпляром Playwright (по лимиту)
+social_scraper.py  —  WB contacts v4
+▪️ Cloudflare-bypass (aiocfscrape) → достаём ИНН из seller-страницы
+▪️ API-ФНС / zachestnyibiznes.ru → phone/e-mail
 Usage:
-    python social_scraper.py --input raw.csv --output socials.csv \
-        --delay 0.2 --concurrency 25 --render-limit 50 --fns-limit 600
+  python social_scraper.py --input raw.csv --output socials.csv \
+         --delay 0.25 --concurrency 30 --fns-limit 500
 """
-
 from __future__ import annotations
-import re, csv, json, argparse, asyncio, time, sys, pathlib
+import re, csv, json, argparse, asyncio, sys, pathlib, random
 from typing import Dict, List, Tuple
-import aiohttp, async_timeout
+
+import aiohttp, async_timeout, aiocfscrape
 from bs4 import BeautifulSoup
-from tqdm.asyncio import tqdm  # tqdm>=4.66 supports asyncio
+from tqdm.asyncio import tqdm
 
-# ────────────────── РЭГЕКС ───────────────────────────────────────────────────────────────────────
+# ─── REGEX ───────────────────────────────────────────────────────────────────
 INN_RE   = re.compile(r'ИНН[:\s]*?(\d{10,12})')
-PHONE_RE = re.compile(r'(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}')
+PHONE_RE = re.compile(r'(?:\+7|8)\s*\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}')
 EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
-TG_RE    = re.compile(r'(?:t\.me|telegram\.me)/[A-Za-z0-9_]+')
-WA_RE    = re.compile(r'wa\.me/\d+')
-SITE_RE  = re.compile(r'https?://[^\s"\'<>]+')
 
-HEADERS = {
-    "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
-                   "AppleWebKit/605.1.15 (KHTML, like Gecko) Chrome/126 Safari/537.36"),
-    "Accept": "*/*"
-}
+HEADERS = {"User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/126.0 Safari/537.36")}
 
-# ────────────────── ПОМОЩНИКИ ────────────────────────────────────────────────────────────
-
-def normalize_phone(raw: str) -> str:
+def norm_phone(raw:str)->str:
     digits = re.sub(r'\D', '', raw)
-    if len(digits) == 11 and digits.startswith('8'):
-        digits = '7' + digits[1:]
-    if len(digits) == 11 and digits.startswith('7'):
+    if len(digits)==11 and digits.startswith('8'):
+        digits = '7'+digits[1:]
+    if len(digits)==11 and digits.startswith('7'):
         return f'+{digits}'
-    if len(digits) == 10:
+    if len(digits)==10:
         return f'+7{digits}'
     return ''
 
-
-def parse_text(text: str) -> Dict[str, str]:
-    return {
-        "phone":     normalize_phone(PHONE_RE.search(text).group(0)) if PHONE_RE.search(text) else '',
-        "email":     EMAIL_RE.search(text).group(0)   if EMAIL_RE.search(text) else '',
-        "telegram":  TG_RE.search(text).group(0)      if TG_RE.search(text) else '',
-        "whatsapp":  WA_RE.search(text).group(0)      if WA_RE.search(text) else '',
-        "site":      SITE_RE.search(text).group(0)    if SITE_RE.search(text) else '',
-    }
-
-
-async def fetch(session: aiohttp.ClientSession, url: str, **kw) -> str:
+async def fetch(session:aiohttp.ClientSession, url:str, timeout:int=15)->str:
     try:
-        async with async_timeout.timeout(20):
-            async with session.get(url, headers=HEADERS, **kw) as r:
+        async with async_timeout.timeout(timeout):
+            async with session.get(url, headers=HEADERS) as r:
                 return await r.text()
     except Exception:
         return ''
 
-# ────────────────── ЯДРО ФУНКЦИИ ────────────────────────────────────────────────────
-
-async def get_inn(session: aiohttp.ClientSession, sid: str) -> str:
-    html = await fetch(session, f'https://www.wildberries.ru/seller/{sid}')
-    m = INN_RE.search(html)
-    return m.group(1) if m else ''
-
-
-async def query_fns(session: aiohttp.ClientSession, inn: str) -> Tuple[str, str]:
-    url = f'https://api-fns.ru/api/egr?req={inn}&key=free'
-    txt = await fetch(session, url)
+# ─── CORE ────────────────────────────────────────────────────────────────────
+async def get_inn_cf(sid:str, scraper)->str:
+    url = f'https://www.wildberries.ru/seller/{sid}'
     try:
-        js = json.loads(txt)
-        item = js.get('items', [{}])[0]
+        html = await scraper.get(url, headers=HEADERS, timeout=15)
+        m = INN_RE.search(html)
+        return m.group(1) if m else ''
+    except Exception:
+        return ''
+
+async def query_fns(session, inn:str)->Tuple[str,str]:
+    url = f'https://api-fns.ru/api/egr?req={inn}&key=free'
+    txt = await fetch(session, url, timeout=20)
+    try:
+        j = json.loads(txt).get('items',[{}])[0]
         phone = ''
-        # телефоны могут быть списком
-        for blk in item.get('СвКонтактДл', []):
+        for blk in j.get('СвКонтактДл', []):
             if 'Телефон' in blk:
                 phone = blk['Телефон']; break
-        email = (item.get('СвАдресЮЛ') or {}).get('ЭлПочта', '')
+        email = (j.get('СвАдресЮЛ') or {}).get('ЭлПочта','')
         return phone, email
     except Exception:
         return '', ''
 
-
-async def scrape_zcb(session: aiohttp.ClientSession, inn: str) -> Tuple[str, str]:
+async def scrape_zcb(session, inn:str)->Tuple[str,str]:
     url = f'https://zachestnyibiznes.ru/company/{"ip" if len(inn)==12 else "ul"}/{inn}'
     html = await fetch(session, url)
     soup = BeautifulSoup(html, 'html.parser')
     block = soup.find(class_='contacts')
-    if not block:
-        return '', ''
-    txt = block.get_text(' ', strip=True)
-    data = parse_text(txt)
-    return data['phone'], data['email']
+    if not block: return '', ''
+    t = block.get_text(' ', strip=True)
+    return (norm_phone(PHONE_RE.search(t).group(0)) if PHONE_RE.search(t) else '',
+            EMAIL_RE.search(t).group(0) if EMAIL_RE.search(t) else '')
 
-
-async def process_row(row: Dict[str, str],
-                      session: aiohttp.ClientSession,
-                      sem: asyncio.Semaphore,
-                      args,
-                      state) -> Dict[str, str]:
+async def process(row:Dict[str,str], session, scraper, sem, args, state)->Dict[str,str]:
     async with sem:
         sid = row['supplier_id']
-        # 1. INN
-        inn = await get_inn(session, sid)
-        row['inn'] = inn
-        contacts = {"phone": '', "email": ''}
-        # 2. ФНС
-        if inn and not args.skip_fns and state['fns_used'] < args.fns_limit:
-            phone, email = await query_fns(session, inn)
-            state['fns_used'] += 1
-            contacts['phone'], contacts['email'] = phone, email
-        # 3. ZCB fallback
-        if inn and not contacts['phone'] and not contacts['email']:
+        inn  = await get_inn_cf(sid, scraper)
+        phone = email = ''
+        if inn and not args.skip_fns and state['fns'] < args.fns_limit:
+            p,e = await query_fns(session, inn)
+            phone = norm_phone(p)
+            email = e
+            state['fns'] += 1
+            await asyncio.sleep(0.25 + random.random()*0.25)   # ФНС не любит «заливку»
+        if inn and not phone and not email:
             phone, email = await scrape_zcb(session, inn)
-            contacts['phone'], contacts['email'] = phone, email
-        # 4. Нормализуем
-        contacts['phone'] = normalize_phone(contacts['phone'])
-        row.update(contacts)
-        # delay
+        row.update({'inn':inn,'phone':phone,'email':email})
         await asyncio.sleep(args.delay)
         return row
 
-# ────────────────── МАЙН ────────────────────────────────────────────────────
-
 async def run(args):
-    rows: List[Dict[str, str]] = []
-    with open(args.input, newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
-
+    rows = list(csv.DictReader(open(args.input, newline='', encoding='utf-8')))
     sem = asyncio.Semaphore(args.concurrency)
-    state = {"fns_used": 0}
+    state = {'fns':0}
 
-    async with aiohttp.ClientSession() as session:
-        tasks = [process_row(r, session, sem, args, state) for r in rows]
-        results = await tqdm.gather(*tasks, desc="Scraping", ncols=80)
+    async with aiohttp.ClientSession() as session, aiocfscrape.AsyncCloudflareScraper() as scraper:
+        tasks = [process(r, session, scraper, sem, args, state) for r in rows]
+        done  = await tqdm.gather(*tasks, ncols=80, desc='Scraping')
 
-    out_fields = list(results[0].keys())
-    pathlib.Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output, 'w', newline='', encoding='utf-8') as f:
-        w = csv.DictWriter(f, fieldnames=out_fields)
-        w.writeheader()
-        w.writerows(results)
-
-    print(f"✔️  saved → {args.output}  |  FNS req: {state['fns_used']}")
+    out = args.output
+    pathlib.Path(out).parent.mkdir(exist_ok=True, parents=True)
+    with open(out,'w',newline='',encoding='utf-8') as f:
+        w = csv.DictWriter(f, fieldnames=done[0].keys())
+        w.writeheader(); w.writerows(done)
+    print(f'✔️ saved → {out}  |  FNS req: {state["fns"]}')
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--input',  default='raw.csv')
+    ap.add_argument('--input', default='raw.csv')
     ap.add_argument('--output', default='socials.csv')
-    ap.add_argument('--delay', type=float, default=0.1, help='pause between sellers, sec')
-    ap.add_argument('--concurrency', type=int, default=25, help='async workers')
-    ap.add_argument('--render-limit', type=int, default=50,
-                    help='(reserved) JS-render limit, not used in HTTP-only mode')
-    ap.add_argument('--fns-limit', type=int, default=600, help='daily quota for api-fns')
-    ap.add_argument('--skip-fns', action='store_true', help='’t query api-fns')
+    ap.add_argument('--delay', type=float, default=0.1)
+    ap.add_argument('--concurrency', type=int, default=30)
+    ap.add_argument('--fns-limit', type=int, default=600)
+    ap.add_argument('--skip-fns', action='store_true')
     args = ap.parse_args()
-
-    try:
-        asyncio.run(run(args))
-    except KeyboardInterrupt:
-        sys.exit("⏹️  interrupted by user")
-
+    try: asyncio.run(run(args))
+    except KeyboardInterrupt: sys.exit('⏹️ interrupted')
 if __name__ == '__main__':
     main()
-
