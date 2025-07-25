@@ -7,47 +7,42 @@ import social_scraper as ss
 
 
 class FakeResp:
-    def __init__(self, js=None, text=""):
-        self._js = js
+    def __init__(self, text="", js=None):
         self.text = text
-        self.ok = True
+        self._js = js or {}
 
     def json(self):
         return self._js
 
 
-def test_social_links(monkeypatch, tmp_path):
-    js = {
-        "data": {
-            "products": [{"description": "call +7 (926) 123-45-67 or test@mail.ru"}]
-        }
-    }
-    monkeypatch.setattr(ss.SESSION, "get", lambda url, params, timeout: FakeResp(js))
-
-    async def fake_render(url, page):
-        return {}
-
-    monkeypatch.setattr(ss, "render_and_parse", fake_render)
-
-    async def fake_sleep(x):
-        return None
-
-    monkeypatch.setattr(ss.asyncio, "sleep", fake_sleep)
-    input_csv = tmp_path / "raw.csv"
-    with open(input_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["supplier_id", "articul", "link"])
-        writer.writeheader()
-        writer.writerow(
-            {
-                "supplier_id": "1",
-                "articul": "10",
-                "link": "http://example.com",
+def test_social_scraper(monkeypatch, tmp_path):
+    def fake_get(url, timeout=10):
+        if "wildberries.ru" in url:
+            return FakeResp(text="ИНН: 1234567890")
+        if "api-fns.ru" in url:
+            js = {
+                "items": [
+                    {
+                        "СвКонтактДл": [{"Телефон": "+7 (926) 123-45-67"}],
+                        "СвАдресЮЛ": {"ЭлПочта": "test@mail.ru"},
+                    }
+                ]
             }
-        )
-    output_csv = tmp_path / "out.csv"
-    argv = ["social_scraper.py", "--input", str(input_csv), "--output", str(output_csv)]
-    monkeypatch.setattr(sys, "argv", argv)
+            return FakeResp(js=js)
+        raise AssertionError("unexpected url")
+
+    monkeypatch.setattr(ss.SESSION, "get", lambda url, timeout=10: fake_get(url, timeout))
+
+    inp = tmp_path / "raw.csv"
+    with open(inp, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["supplier_id"])
+        w.writeheader()
+        w.writerow({"supplier_id": "1"})
+
+    outp = tmp_path / "out.csv"
+    monkeypatch.setattr(sys, "argv", ["social_scraper.py", "--input", str(inp), "--output", str(outp)])
     ss.main()
-    rows = list(csv.DictReader(open(output_csv, encoding="utf-8")))
-    assert rows[0]["email"] == "test@mail.ru"
+    rows = list(csv.DictReader(open(outp, encoding="utf-8")))
+    assert rows[0]["inn"] == "1234567890"
     assert rows[0]["phone"] == "+79261234567"
+    assert rows[0]["email"] == "test@mail.ru"
