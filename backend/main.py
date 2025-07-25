@@ -1,8 +1,18 @@
+import datetime
+import hashlib
+import json
+import logging
+import os
+import secrets
+import sqlite3
+
+import jwt
+import openai
+import requests
+from bs4 import BeautifulSoup
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import os, openai, hashlib, jwt, datetime, json, requests, logging, secrets, sqlite3
-from bs4 import BeautifulSoup
 
 # ============================
 # 🔐 Загрузка секретов из env
@@ -14,7 +24,9 @@ PROD = ENV == "PRODUCTION"
 # ✅ OpenAI API Key (обязательно: без него переписывание не работает)
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_KEY:
-    raise ValueError("❌ OPENAI_API_KEY не установлен. Укажите его в Railway/GitHub Secrets.")
+    raise ValueError(
+        "❌ OPENAI_API_KEY не установлен. Укажите его в Railway/GitHub Secrets."
+    )
 client = openai.OpenAI(api_key=OPENAI_KEY)
 
 # ✅ Robokassa Pass2 (используется для подписи callback'ов)
@@ -43,9 +55,13 @@ DB.execute("CREATE TABLE IF NOT EXISTS tokens (inv TEXT PRIMARY KEY, token TEXT)
 DB.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
 DB.commit()
 
+
 def store_token(inv: str, token: str):
     with DB:
-        DB.execute("INSERT OR REPLACE INTO tokens(inv, token) VALUES(?, ?)", (str(inv), token))
+        DB.execute(
+            "INSERT OR REPLACE INTO tokens(inv, token) VALUES(?, ?)", (str(inv), token)
+        )
+
 
 def fetch_token(inv: str) -> str | None:
     cur = DB.execute("SELECT token FROM tokens WHERE inv=?", (str(inv),))
@@ -56,6 +72,7 @@ def fetch_token(inv: str) -> str | None:
         return row[0]
     return None
 
+
 def next_inv_id() -> int:
     with DB:
         cur = DB.execute("SELECT value FROM meta WHERE key='last_inv'")
@@ -64,22 +81,39 @@ def next_inv_id() -> int:
         nxt = last + 1
         if nxt > 2147483647:
             nxt = 3000
-        DB.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('last_inv', ?)", (str(nxt),))
+        DB.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('last_inv', ?)", (str(nxt),)
+        )
     return nxt
 
+
 PROMPT = """
-Ты опытный SEO-копирайтер маркетплейса Wildberries.
-Тебе дают исходный текст карточки товара. Сгенерируй:
-1) Новый заголовок ≤100 символов.
-2) 6 буллитов ≤120 символов каждый.
-3) 20 ключевых фраз CSV.
-Тон разговорный, без канцелярита, язык Русский.
-Не упоминай «Wildberries», «скидка», %. Верни JSON:
+Ты — опытный SEO-копирайтер маркетплейса Wildberries.
+Тебе дают исходный текст карточки товара.
+
+🔹 ЗАДАЧА  
+Сгенерируй:
+1) 🔑 Новый продающий заголовок ≤ 100 символов.  
+   • В начале главный ключ.  
+   • Без точек, кавычек, % и слова «Wildberries».  
+2) 🎯 6 буллитов ≤ 120 символов каждый — выгоды для покупателя, без канцелярита.  
+   • Используй глагол в начале («Ускоряет…», «Защищает…»).  
+   • Избегай повторов слов.  
+3) 🗝️ 20 ключевых фраз CSV, релевантных товару — ранжируй от самых частотных к нишевым.  
+   • Используй Яндекс.Wordstat логики: сначала высокочастотные, затем средне- и низкочастотные.  
+   • Исключи стоп-слова «купить», «скидка», «wildberries», «дёшево».
+
+🔹 ТОН  
+Разговорный, живой, без штампов «лучший», «идеальный». Русский язык.
+
+🔹 ФОРМАТ ВЫВОДА — строго валидный JSON, без комментариев:
 {
- "title":"…",
- "bullets":["…","…","…","…","…","…"],
- "keywords":["k1","k2",…,"k20"]
+ "title": "…",
+ "bullets": ["…","…","…","…","…","…"],
+ "keywords": ["k1","k2", … , "k20"]
 }
+
+Валидация: не более 100 символов заголовок; ровно 6 буллитов; ровно 20 ключей.
 """
 
 app = FastAPI()
@@ -101,24 +135,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-@app.options("/rewrite", include_in_schema=False)   # pre-flight
-async def _pre(): return {}
+
+
+@app.options("/rewrite", include_in_schema=False)  # pre-flight
+async def _pre():
+    return {}
+
 
 # ── helpers ───────────────────────────────────
-def issue(email:str, quota:int):
+def issue(email: str, quota: int):
     return jwt.encode(
-        {"sub":email, "quota":quota,
-         "exp":datetime.datetime.utcnow()+datetime.timedelta(days=30)},
-        SECRET, algorithm="HS256")
+        {
+            "sub": email,
+            "quota": quota,
+            "exp": datetime.datetime.utcnow() + datetime.timedelta(days=30),
+        },
+        SECRET,
+        algorithm="HS256",
+    )
 
-def verify(tok:str):
-    try: return jwt.decode(tok, SECRET, algorithms=["HS256"])
-    except: return None
 
-def send_email(to:str, login:str, password:str):
+def verify(tok: str):
+    try:
+        return jwt.decode(tok, SECRET, algorithms=["HS256"])
+    except:
+        return None
+
+
+def send_email(to: str, login: str, password: str):
     logging.info(f"Email to {to}: login={login} password={password}")
 
-def create_account(email:str, quota:int, inv:str):
+
+def create_account(email: str, quota: int, inv: str):
     login = secrets.token_hex(4)
     password = secrets.token_hex(4)
     ACCOUNTS[email] = {"login": login, "password": password, "quota": quota}
@@ -129,7 +177,8 @@ def create_account(email:str, quota:int, inv:str):
     send_email(email, login, password)
     return token
 
-def wb_text(url:str) -> str:
+
+def wb_text(url: str) -> str:
     """Return meta description from a Wildberries product page."""
     try:
         html = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10).text
@@ -139,75 +188,86 @@ def wb_text(url:str) -> str:
     except Exception:
         return url
 
+
 # ── API ───────────────────────────────────────
 class Req(BaseModel):
-    supplierId:int
-    prompt:str
+    supplierId: int
+    prompt: str
+
 
 @app.post("/rewrite")
-async def rewrite(r:Req, request:Request):
-    info = verify(request.headers.get("Authorization","").replace("Bearer ",""))
-    if not info: info = {"sub":"anon","quota":3}   # 3 free
-    if info["quota"]<=0:
-        return {"error":"NO_CREDITS"}
+async def rewrite(r: Req, request: Request):
+    info = verify(request.headers.get("Authorization", "").replace("Bearer ", ""))
+    if not info:
+        info = {"sub": "anon", "quota": 3}  # 3 free
+    if info["quota"] <= 0:
+        return {"error": "NO_CREDITS"}
     prompt = r.prompt.strip()
     if prompt.startswith("http") and "wildberries.ru" in prompt:
         prompt = wb_text(prompt)
     try:
         comp = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role":"system","content":PROMPT},
-                      {"role":"user","content":prompt}]
+            messages=[
+                {"role": "system", "content": PROMPT},
+                {"role": "user", "content": prompt},
+            ],
         )
     except Exception as e:
         return {"error": str(e)}
     info["quota"] -= 1
     if info["sub"] in ACCOUNTS:
         ACCOUNTS[info["sub"]]["quota"] = info["quota"]
-    return {"token": jwt.encode(info, SECRET, "HS256"),
-            **json.loads(comp.choices[0].message.content)}
+    return {
+        "token": jwt.encode(info, SECRET, "HS256"),
+        **json.loads(comp.choices[0].message.content),
+    }
+
 
 # Robokassa ResultURL
 @app.post("/payhook")
-async def payhook(req:Request):
+async def payhook(req: Request):
     f = await req.form()
     inv = f.get("InvId") or f.get("InvoiceID")
     # Collect and sort all Shp_* parameters alphabetically for CRC
-    shp_params = {k: f[k] for k in f.keys() if k.startswith('Shp_')}
-    shp_part = ':'.join(f"{k}={shp_params[k]}" for k in sorted(shp_params))
+    shp_params = {k: f[k] for k in f.keys() if k.startswith("Shp_")}
+    shp_part = ":".join(f"{k}={shp_params[k]}" for k in sorted(shp_params))
     crc_str = f"{f['OutSum']}:{inv}:{PASS2}:{shp_part}"
     crc = hashlib.md5(crc_str.encode()).hexdigest().upper()
-    if crc != f['SignatureValue'].upper():
+    if crc != f["SignatureValue"].upper():
         return "bad sign"
-    quota = 15 if f['Shp_plan']=="15" else 60
+    quota = 15 if f["Shp_plan"] == "15" else 60
     email = f.get("Email", "user@wb6")
     create_account(email, quota, inv)
     return "OK"
 
+
 class LoginReq(BaseModel):
-    login:str
-    password:str
+    login: str
+    password: str
+
 
 @app.post("/login")
-async def login(r:LoginReq):
+async def login(r: LoginReq):
     email = LOGIN_INDEX.get(r.login)
     if not email:
-        return {"error":"AUTH_FAILED"}
+        return {"error": "AUTH_FAILED"}
     acc = ACCOUNTS.get(email)
     if acc and acc["password"] == r.password:
         return {"token": issue(email, acc["quota"])}
-    return {"error":"AUTH_FAILED"}
+    return {"error": "AUTH_FAILED"}
+
 
 @app.get("/next_inv")
 async def get_next_inv():
     return {"inv": next_inv_id()}
 
+
 @app.get("/paytoken")
-async def paytoken(inv:int):
+async def paytoken(inv: int):
     tok = fetch_token(str(inv))
     if not tok:
         tok = TOKENS.pop(str(inv), None)
     if tok:
         return {"token": tok}
-    return {"error":"NOT_READY"}
-
+    return {"error": "NOT_READY"}
