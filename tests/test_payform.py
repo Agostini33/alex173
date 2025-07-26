@@ -37,3 +37,4 @@ def test_payform_crc(monkeypatch):
     assert fields["SignatureValue"] == hashlib.md5(crc_str.encode()).hexdigest()
     assert "Desc" not in fields
     assert "Email" not in fields
+    assert "Shp_plan" not in fields
