@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8">
 <title>Оплата WB6</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
 <style>
   body{font-family:Inter,Arial,sans-serif;text-align:center;padding-top:60px}
 </style>
@@ -21,58 +20,20 @@
   <button type="submit">Оплатить</button>
 </form>
 <script>
-const PASS1 = "EyQbM1TFm6uOp6l6JEi2"; // пароль#1 из кабинета
-const LOGIN = "wb6.ru"; // MrchLogin
-const TEST_MODE = !location.hostname.match(/^wb6\.ru$/);
 const form = document.getElementById('pay');
 form.onsubmit = async e => {
   e.preventDefault();
-
-  const plan = document.getElementById('plan');
+  const plan = document.getElementById('plan').value;
   const email = document.getElementById('email').value;
-  const price = plan.options[plan.selectedIndex].dataset.price;
-  const inv = (await fetch('https://api.wb6.ru/next_inv').then(r => r.json())).inv;
-  const desc = plan.value + ' rewrite';
-
-  // Sort all Shp_* params before signing as required by Robokassa
-  const shpParams = { Shp_plan: plan.value };
-  const shpPart = Object.keys(shpParams)
-    .sort()
-    .map(k => `${k}=${shpParams[k]}`)
-    .join(':');
-  const crcStr = `${LOGIN}:${price}:${inv}:${PASS1}:${shpPart}`;
-  const sig = CryptoJS.MD5(crcStr).toString();
-
-  const paymentForm = document.createElement('form');
-  paymentForm.method = 'POST';
-  paymentForm.action = 'https://auth.robokassa.ru/Merchant/Index.aspx';
-
-  const params = {
-    MrchLogin: LOGIN,
-    OutSum: price,
-    InvId: inv,
-    Desc: desc,
-    SignatureValue: sig,
-    Email: email,
-    Shp_plan: plan.value,
-    Culture: 'ru',
-    Encoding: 'utf-8',
-    SuccessURL: location.origin + '/pay.html?InvId=' + inv
-  };
-  if (TEST_MODE) params.IsTest = 1; // Robokassa sandbox → убираем IsTest на prod
-
-  for (const [key, value] of Object.entries(params)) {
-    const input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = key;
-    input.value = value;
-    paymentForm.appendChild(input);
-  }
-
-  document.body.appendChild(paymentForm);
-  // DEBUG: удалить задержку и лог перед релизом
-  console.log({crcStr, sig, ...params});
-  setTimeout(() => paymentForm.submit(), 200);
+  const resp = await fetch('https://api.wb6.ru/payform', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({plan, email})
+  }).then(r => r.json());
+  const div = document.createElement('div');
+  div.innerHTML = resp.form;
+  document.body.appendChild(div.firstElementChild);
+  document.getElementById('rk').submit();
 };
 
 // автозагрузка токена после оплаты

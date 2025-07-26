@@ -29,7 +29,16 @@ if not OPENAI_KEY:
     )
 client = openai.OpenAI(api_key=OPENAI_KEY)
 
-# ✅ Robokassa Pass2 (используется для подписи callback'ов)
+# ✅ Robokassa Pass1/Pass2 (используются для подписи форм и callback'ов)
+PASS1 = os.getenv("ROBOKASSA_PASS1")
+if not PASS1:
+    logging.warning("ROBOKASSA_PASS1 не установлен: оплата отключена")
+    if not PROD:
+        PASS1 = "dev-pass1"
+
+LOGIN = os.getenv("ROBOKASSA_LOGIN", "wb6.ru")
+
+# Pass2 для проверки ResultURL
 PASS2 = os.getenv("ROBOKASSA_PASS2")
 if not PASS2:
     logging.warning("ROBOKASSA_PASS2 не установлен: оплата отключена")
@@ -85,6 +94,8 @@ def next_inv_id() -> int:
             "INSERT OR REPLACE INTO meta(key, value) VALUES('last_inv', ?)", (str(nxt),)
         )
     return nxt
+
+PRICES = {"15": "199", "60": "499"}
 
 
 PROMPT = """
@@ -261,6 +272,40 @@ async def login(r: LoginReq):
 @app.get("/next_inv")
 async def get_next_inv():
     return {"inv": next_inv_id()}
+
+
+@app.post("/payform")
+async def payform(request: Request):
+    data = await request.json()
+    plan = str(data.get("plan"))
+    email = data.get("email", "")
+    price = PRICES.get(plan)
+    if not price:
+        return {"error": "BAD_PLAN"}
+    inv = next_inv_id()
+    desc = f"{plan} rewrite"
+    shp_part = f"Shp_plan={plan}"
+    crc_str = f"{LOGIN}:{price}:{inv}:{PASS1}:{shp_part}"
+    sig = hashlib.md5(crc_str.encode()).hexdigest()
+    fields = {
+        "MerchantLogin": LOGIN,
+        "OutSum": price,
+        "InvId": inv,
+        "Desc": desc,
+        "SignatureValue": sig,
+        "Shp_plan": plan,
+    }
+    if email:
+        fields["Email"] = email
+    if not PROD:
+        fields["IsTest"] = 1
+    html = [
+        '<form method="POST" action="https://auth.robokassa.ru/Merchant/Index.aspx" id="rk">'
+    ]
+    for k, v in fields.items():
+        html.append(f'<input type="hidden" name="{k}" value="{v}">')
+    html.append("</form>")
+    return {"form": "".join(html)}
 
 
 @app.get("/paytoken")
