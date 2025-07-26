@@ -45,6 +45,9 @@ if not PASS2:
     if not PROD:
         PASS2 = "dev-pass2"
 
+# Формула контрольной суммы платежной формы
+CRC_FORMULA = "md5(MerchantLogin:OutSum:InvId:Pass1:Shp_plan=PLAN)"
+
 # ✅ JWT-секрет (подписывает access-токены на клиенте)
 SECRET = os.getenv("JWT_SECRET")
 if not SECRET:
@@ -272,6 +275,12 @@ async def login(r: LoginReq):
 @app.get("/next_inv")
 async def get_next_inv():
     return {"inv": next_inv_id()}
+
+
+# Информация для тестовой страницы Robokassa
+@app.get("/rkinfo")
+async def rkinfo():
+    return {"pass1": PASS1, "pass2": PASS2, "crc_formula": CRC_FORMULA}
 
 
 @app.post("/payform")
