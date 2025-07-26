@@ -46,7 +46,7 @@ if not PASS2:
         PASS2 = "dev-pass2"
 
 # Формула контрольной суммы платежной формы
-CRC_FORMULA = "md5(MerchantLogin:OutSum:InvId:Pass1:Shp_plan=PLAN)"
+CRC_FORMULA = "md5(MerchantLogin:OutSum:InvId:Pass1[:Shp_param=val...])"
 
 # ✅ JWT-секрет (подписывает access-токены на клиенте)
 SECRET = os.getenv("JWT_SECRET")
@@ -97,6 +97,7 @@ def next_inv_id() -> int:
             "INSERT OR REPLACE INTO meta(key, value) VALUES('last_inv', ?)", (str(nxt),)
         )
     return nxt
+
 
 PRICES = {"15": "199", "60": "499"}
 
@@ -293,17 +294,25 @@ async def payform(request: Request):
         return {"error": "BAD_PLAN"}
     inv = next_inv_id()
     desc = f"{plan} rewrite"
-    shp_part = f"Shp_plan={plan}"
+
+    # Collect Shp_* parameters (at least Shp_plan)
+    shp_params = {"Shp_plan": plan}
+    for k, v in data.items():
+        if k.startswith("Shp_"):
+            shp_params[k] = str(v)
+
+    shp_part = ":".join(f"{k}={shp_params[k]}" for k in sorted(shp_params))
     crc_str = f"{LOGIN}:{price}:{inv}:{PASS1}:{shp_part}"
     sig = hashlib.md5(crc_str.encode()).hexdigest()
+
     fields = {
         "MerchantLogin": LOGIN,
         "OutSum": price,
         "InvId": inv,
         "Desc": desc,
         "SignatureValue": sig,
-        "Shp_plan": plan,
     }
+    fields.update(shp_params)
     if email:
         fields["Email"] = email
     html = [
