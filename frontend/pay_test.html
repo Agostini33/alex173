@@ -1,0 +1,60 @@
+<!doctype html>
+<!-- TEST VERSION of payment page -->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Оплата WB6</title>
+<style>
+  body{font-family:Inter,Arial,sans-serif;text-align:center;padding-top:60px}
+</style>
+</head>
+<body>
+<h2>Оплатите пакет переписываний</h2>
+<form id="pay">
+  <input type="email" id="email" placeholder="Ваш e-mail" required>
+  <label>Тариф:
+    <select id="plan">
+      <option value="15" data-price="199">15 переписываний – 199 ₽</option>
+      <option value="60" data-price="499">60 переписываний – 499 ₽</option>
+    </select>
+  </label>
+  <button type="submit">Оплатить</button>
+</form>
+<script>
+const form = document.getElementById('pay');
+form.onsubmit = async e => {
+  e.preventDefault();
+  const plan = document.getElementById('plan').value;
+  const email = document.getElementById('email').value;
+  const resp = await fetch('https://api.wb6.ru/payform', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({plan, email})
+  }).then(r => r.json());
+  const div = document.createElement('div'); // TEST: create container for RK form
+  div.innerHTML = resp.form;                 // TEST: insert RK form HTML
+  const rkForm = div.querySelector('form');   // TEST: reference real form
+  const out = document.createElement('pre');  // TEST: element to show params
+  out.textContent = Array.from(rkForm.elements)
+    .map(el => el.name + ': ' + el.value)
+    .join('\n');                             // TEST: build params list
+  document.body.appendChild(out);             // TEST: display params
+  // document.body.appendChild(rkForm);       // TEST: append if needed
+  // document.getElementById('rk').submit();  // TEST: auto-submit disabled
+};
+
+// автозагрузка токена после оплаты
+const q = new URLSearchParams(location.search);
+if (q.get('InvId')) {
+  fetch('https://api.wb6.ru/paytoken?inv=' + q.get('InvId'))
+    .then(r => r.json())
+    .then(js => {
+      if (js.token) {
+        localStorage.setItem('wb6_jwt', js.token);
+        location = 'index.html';
+      }
+    });
+}
+</script>
+</body>
+</html>
