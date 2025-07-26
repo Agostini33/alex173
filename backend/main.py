@@ -247,11 +247,17 @@ async def payhook(req: Request):
     # Collect and sort all Shp_* parameters alphabetically for CRC
     shp_params = {k: f[k] for k in f.keys() if k.startswith("Shp_")}
     shp_part = ":".join(f"{k}={shp_params[k]}" for k in sorted(shp_params))
-    crc_str = f"{f['OutSum']}:{inv}:{PASS2}:{shp_part}"
+    crc_str = f"{f['OutSum']}:{inv}:{PASS2}"
+    if shp_part:
+        crc_str += f":{shp_part}"
     crc = hashlib.md5(crc_str.encode()).hexdigest().upper()
     if crc != f["SignatureValue"].upper():
         return "bad sign"
-    quota = 15 if f["Shp_plan"] == "15" else 60
+    price = f["OutSum"]
+    if price == PRICES["15"]:
+        quota = 15
+    else:
+        quota = 60
     email = f.get("Email", "user@wb6")
     create_account(email, quota, inv)
     return "OK"
@@ -295,11 +301,10 @@ async def payform(request: Request):
     inv = next_inv_id()
     desc = f"{plan} rewrite"
 
-    # Collect Shp_* parameters (at least Shp_plan)
-    shp_params = {"Shp_plan": plan}
-    for k, v in data.items():
-        if k.startswith("Shp_"):
-            shp_params[k] = str(v)
+    # Collect optional Shp_* parameters, excluding Shp_plan
+    shp_params = {
+        k: str(v) for k, v in data.items() if k.startswith("Shp_") and k != "Shp_plan"
+    }
 
     shp_part = ":".join(f"{k}={shp_params[k]}" for k in sorted(shp_params))
     crc_str = f"{LOGIN}:{price}:{inv}:{PASS1}"
