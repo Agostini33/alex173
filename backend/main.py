@@ -309,12 +309,9 @@ async def payform(request: Request):
         "MerchantLogin": LOGIN,
         "OutSum": price,
         "InvId": inv,
-        "Desc": desc,
         "SignatureValue": sig,
     }
     fields.update(shp_params)
-    if email:
-        fields["Email"] = email
     html = [
         '<form method="POST" action="https://auth.robokassa.ru/Merchant/Index.aspx" id="rk">'
     ]
