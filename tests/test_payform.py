@@ -31,7 +31,9 @@ def test_payform_crc(monkeypatch):
 
     shp_params = {k: fields[k] for k in fields if k.startswith("Shp_")}
     shp_part = ":".join(f"{k}={shp_params[k]}" for k in sorted(shp_params))
-    crc_str = f"{fields['MerchantLogin']}:{fields['OutSum']}:{fields['InvId']}:pass1:{shp_part}"
+    crc_str = f"{fields['MerchantLogin']}:{fields['OutSum']}:{fields['InvId']}:pass1"
+    if shp_part:
+        crc_str += f":{shp_part}"
     assert fields["SignatureValue"] == hashlib.md5(crc_str.encode()).hexdigest()
     assert "Desc" not in fields
     assert "Email" not in fields

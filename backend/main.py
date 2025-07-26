@@ -302,7 +302,9 @@ async def payform(request: Request):
             shp_params[k] = str(v)
 
     shp_part = ":".join(f"{k}={shp_params[k]}" for k in sorted(shp_params))
-    crc_str = f"{LOGIN}:{price}:{inv}:{PASS1}:{shp_part}"
+    crc_str = f"{LOGIN}:{price}:{inv}:{PASS1}"
+    if shp_part:
+        crc_str += f":{shp_part}"
     sig = hashlib.md5(crc_str.encode()).hexdigest()
 
     fields = {
