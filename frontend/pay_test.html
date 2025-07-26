@@ -20,6 +20,7 @@
   </label>
   <button type="submit">Оплатить</button>
 </form>
+<pre id="rkinfo"></pre>
 <script>
 const form = document.getElementById('pay');
 form.onsubmit = async e => {
@@ -42,6 +43,16 @@ form.onsubmit = async e => {
   // document.body.appendChild(rkForm);       // TEST: append if needed
   // document.getElementById('rk').submit();  // TEST: auto-submit disabled
 };
+
+// Показать pass1/pass2 и формулу CRC
+fetch('https://api.wb6.ru/rkinfo')
+  .then(r => r.json())
+  .then(js => {
+    document.getElementById('rkinfo').textContent =
+      'Pass1: ' + js.pass1 + '\n' +
+      'Pass2: ' + js.pass2 + '\n' +
+      'CRC: ' + js.crc_formula;
+  });
 
 // автозагрузка токена после оплаты
 const q = new URLSearchParams(location.search);
