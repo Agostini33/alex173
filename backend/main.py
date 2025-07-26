@@ -297,8 +297,6 @@ async def payform(request: Request):
     }
     if email:
         fields["Email"] = email
-    if not PROD:
-        fields["IsTest"] = 1
     html = [
         '<form method="POST" action="https://auth.robokassa.ru/Merchant/Index.aspx" id="rk">'
     ]
