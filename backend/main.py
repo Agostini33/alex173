@@ -99,7 +99,7 @@ def next_inv_id() -> int:
     return nxt
 
 
-PRICES = {"15": "199", "60": "499"}
+PRICES = {"1": "1", "15": "199", "60": "499"}
 
 
 PROMPT = """
@@ -254,7 +254,9 @@ async def payhook(req: Request):
     if crc != f["SignatureValue"].upper():
         return "bad sign"
     price = f["OutSum"]
-    if price == PRICES["15"]:
+    if price == PRICES["1"]:
+        quota = 1
+    elif price == PRICES["15"]:
         quota = 15
     else:
         quota = 60
@@ -319,6 +321,8 @@ async def payform(request: Request):
         "SignatureValue": sig,
     }
     fields.update(shp_params)
+    if email:
+        fields["Email"] = email
     html = [
         '<form method="POST" action="https://auth.robokassa.ru/Merchant/Index.aspx" id="rk">'
     ]

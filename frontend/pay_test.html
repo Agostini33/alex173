@@ -14,13 +14,13 @@
   <input type="email" id="email" placeholder="Ваш e-mail" required>
   <label>Тариф:
     <select id="plan">
+      <option value="1" data-price="1">1 переписывание – 1 ₽ (тест)</option>
       <option value="15" data-price="199">15 переписываний – 199 ₽</option>
-      <option value="60" data-price="499">60 переписываний – 499 ₽</option>
+      <option value="60" data-price="499" selected>60 переписываний – 499 ₽</option>
     </select>
   </label>
   <button type="submit">Оплатить</button>
 </form>
-<pre id="rkinfo"></pre>
 <script>
 const form = document.getElementById('pay');
 form.onsubmit = async e => {
@@ -44,15 +44,7 @@ form.onsubmit = async e => {
   // document.getElementById('rk').submit();  // TEST: auto-submit disabled
 };
 
-// Показать pass1/pass2 и формулу CRC
-fetch('https://api.wb6.ru/rkinfo')
-  .then(r => r.json())
-  .then(js => {
-    document.getElementById('rkinfo').textContent =
-      'Pass1: ' + js.pass1 + '\n' +
-      'Pass2: ' + js.pass2 + '\n' +
-      'CRC: ' + js.crc_formula;
-  });
+
 
 // автозагрузка токена после оплаты
 const q = new URLSearchParams(location.search);
