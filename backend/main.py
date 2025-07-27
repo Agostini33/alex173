@@ -253,13 +253,15 @@ async def payhook(req: Request):
     crc = hashlib.md5(crc_str.encode()).hexdigest().upper()
     if crc != f["SignatureValue"].upper():
         return "bad sign"
-    price = f["OutSum"]
+    price = str(int(float(f["OutSum"])))
     if price == PRICES["1"]:
         quota = 1
     elif price == PRICES["15"]:
         quota = 15
-    else:
+    elif price == PRICES["60"]:
         quota = 60
+    else:
+        return "bad sum"
     email = f.get("Email", "user@wb6")
     create_account(email, quota, inv)
     return "OK"
