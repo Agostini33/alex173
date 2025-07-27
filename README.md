@@ -51,6 +51,11 @@ WB6 — это веб-сервис, который с помощью OpenAI пе
 
 IsTest сейчас не используется: тестирование идёт в боевом режиме.
 
+Настройка Robokassa:
+- **Result URL:** `https://api.wb6.ru/payhook` (POST)
+- **Success URL:** `https://wb6.ru/pay.html` (GET)
+- **Fail URL:** `https://wb6.ru/pay.html` (GET)
+
 ## 🧪 CI/CD:
 
 - GitHub Actions для backend и frontend

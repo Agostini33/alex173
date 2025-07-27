@@ -52,3 +52,22 @@ def test_paytoken_persistence(monkeypatch, tmp_path):
     assert 'token' in resp.json()
     resp2 = client2.get('/paytoken', params={'inv': data['InvId']})
     assert resp2.json()['error'] == 'NOT_READY'
+
+
+def test_payhook_quota_one(monkeypatch):
+    monkeypatch.setenv('OPENAI_API_KEY', 'key')
+    monkeypatch.setenv('ROBOKASSA_PASS2', 'pass2')
+
+    m = reload_main()
+    from fastapi.testclient import TestClient
+    client = TestClient(m.app)
+    data = {'InvId': '7', 'OutSum': '1.00'}
+    shp_params = {k: data[k] for k in data if k.startswith('Shp_')}
+    shp_part = ':'.join(f"{k}={shp_params[k]}" for k in sorted(shp_params))
+    crc_str = f"{data['OutSum']}:{data['InvId']}:pass2"
+    if shp_part:
+        crc_str += f":{shp_part}"
+    data['SignatureValue'] = hashlib.md5(crc_str.encode()).hexdigest().upper()
+    resp = client.post('/payhook', data=data)
+    assert resp.json() == 'OK'
+    assert m.ACCOUNTS['user@wb6']['quota'] == 1
