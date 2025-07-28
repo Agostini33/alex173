@@ -32,6 +32,8 @@ form.onsubmit = async e => {
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({plan, email})
   }).then(r => r.json());
+  const old = document.getElementById('rk');
+  if (old) old.remove();
   const div = document.createElement('div');
   div.innerHTML = resp.form;
   document.body.appendChild(div.firstElementChild);
