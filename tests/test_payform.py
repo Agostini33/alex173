@@ -38,3 +38,20 @@ def test_payform_crc(monkeypatch):
     assert "Desc" not in fields
     assert fields["Email"] == "1@1.com"
     assert "Shp_plan" not in fields
+
+
+def test_payform_price_one(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setenv("ROBOKASSA_PASS1", "pass1")
+    app = reload_main().app
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app)
+
+    resp = client.post("/payform", json={"plan": "1"})
+    fields = {
+        inp["name"]: inp["value"]
+        for inp in BeautifulSoup(resp.json()["form"], "html.parser").find_all("input")
+    }
+
+    assert fields["OutSum"] == "1"
