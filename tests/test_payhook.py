@@ -98,3 +98,18 @@ def test_payhook_quota_200(monkeypatch):
     resp = client.post("/payhook", data=data)
     assert resp.json() == "OK"
     assert m.ACCOUNTS["user@wb6"]["quota"] == 200
+
+
+def test_payhook_alt_crc(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setenv("ROBOKASSA_PASS2", "pass2")
+
+    m = reload_main()
+    from fastapi.testclient import TestClient
+
+    client = TestClient(m.app)
+    data = {"InvId": "9", "OutSum": "1.00"}
+    crc_str = f"1:{data['InvId']}:pass2"
+    data["SignatureValue"] = hashlib.md5(crc_str.encode()).hexdigest().upper()
+    resp = client.post("/payhook", data=data)
+    assert resp.json() == "OK"

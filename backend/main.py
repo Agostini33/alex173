@@ -252,7 +252,13 @@ async def payhook(req: Request):
         crc_str += f":{shp_part}"
     crc = hashlib.md5(crc_str.encode()).hexdigest().upper()
     if crc != f["SignatureValue"].upper():
-        return "bad sign"
+        alt_sum = str(int(float(f["OutSum"])))
+        crc_str = f"{alt_sum}:{inv}:{PASS2}"
+        if shp_part:
+            crc_str += f":{shp_part}"
+        crc = hashlib.md5(crc_str.encode()).hexdigest().upper()
+        if crc != f["SignatureValue"].upper():
+            return "bad sign"
     price = str(int(float(f["OutSum"])))
     if price == PRICES["1"]:
         quota = 10
