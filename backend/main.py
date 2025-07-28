@@ -310,6 +310,9 @@ async def payform(request: Request):
     price = PRICES.get(plan)
     if not price:
         return {"error": "BAD_PLAN"}
+    # Robokassa sometimes expects integer sums without trailing zeros.
+    # Normalize the amount to avoid values like "1.00" in the form.
+    price = str(int(float(price)))
     inv = next_inv_id()
     desc = f"{plan} rewrite"
 
