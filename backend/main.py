@@ -255,7 +255,7 @@ async def payhook(req: Request):
         return "bad sign"
     price = str(int(float(f["OutSum"])))
     if price == PRICES["1"]:
-        quota = 1
+        quota = 10
     elif price == PRICES["15"]:
         quota = 15
     elif price == PRICES["60"]:
