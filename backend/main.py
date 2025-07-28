@@ -99,7 +99,7 @@ def next_inv_id() -> int:
     return nxt
 
 
-PRICES = {"1": "1", "15": "199", "60": "499"}
+PRICES = {"1": "1", "15": "199", "60": "499", "200": "999"}
 
 
 PROMPT = """
@@ -260,6 +260,8 @@ async def payhook(req: Request):
         quota = 15
     elif price == PRICES["60"]:
         quota = 60
+    elif price == PRICES["200"]:
+        quota = 200
     else:
         return "bad sum"
     email = f.get("Email", "user@wb6")
