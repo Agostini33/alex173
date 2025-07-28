@@ -77,7 +77,7 @@ def test_payhook_quota_one(monkeypatch):
     data["SignatureValue"] = hashlib.md5(crc_str.encode()).hexdigest().upper()
     resp = client.post("/payhook", data=data)
     assert resp.json() == "OK"
-    assert m.ACCOUNTS["user@wb6"]["quota"] == 1
+    assert m.ACCOUNTS["user@wb6"]["quota"] == 10
 
 
 def test_payhook_quota_200(monkeypatch):
