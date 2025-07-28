@@ -247,18 +247,29 @@ async def payhook(req: Request):
     # Collect and sort all Shp_* parameters alphabetically for CRC
     shp_params = {k: f[k] for k in f.keys() if k.startswith("Shp_")}
     shp_part = ":".join(f"{k}={shp_params[k]}" for k in sorted(shp_params))
-    crc_str = f"{f['OutSum']}:{inv}:{PASS2}"
-    if shp_part:
-        crc_str += f":{shp_part}"
-    crc = hashlib.md5(crc_str.encode()).hexdigest().upper()
-    if crc != f["SignatureValue"].upper():
-        alt_sum = str(int(float(f["OutSum"])))
-        crc_str = f"{alt_sum}:{inv}:{PASS2}"
+
+    def norm_sum(v: str) -> str:
+        """Normalize Robokassa sum like '1.00' -> '1'"""
+        try:
+            n = float(v)
+        except Exception:
+            return v
+        if n.is_integer():
+            return str(int(n))
+        return ("%f" % n).rstrip("0").rstrip(".")
+
+    sums = [norm_sum(f["OutSum"]), f["OutSum"]]
+    ok = False
+    for s in sums:
+        crc_str = f"{s}:{inv}:{PASS2}"
         if shp_part:
             crc_str += f":{shp_part}"
         crc = hashlib.md5(crc_str.encode()).hexdigest().upper()
-        if crc != f["SignatureValue"].upper():
-            return "bad sign"
+        if crc == f["SignatureValue"].upper():
+            ok = True
+            break
+    if not ok:
+        return "bad sign"
     price = str(int(float(f["OutSum"])))
     if price == PRICES["1"]:
         quota = 10
