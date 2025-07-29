@@ -1,12 +1,12 @@
 import datetime
 import hashlib
+import html
 import json
 import logging
 import os
+import re
 import secrets
 import sqlite3
-import re
-import html
 
 import jwt
 import openai
@@ -207,21 +207,26 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
         return url
     nm_id = int(m.group(1))
 
-    api = (
-        f"https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm_id}"
-    )
+    api = f"https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm_id}"
+    desc_html = ""
     try:
-        prod = requests.get(api, timeout=10).json()["data"]["products"][0]
+        js = requests.get(api, timeout=10).json()
+        prods = js["data"]["products"]
+        # ищем именно наш nmID
+        prod = next((p for p in prods if p.get("id") == nm_id), prods[0])
         desc_html = prod.get("description") or ""
     except Exception:
-        desc_html = ""
+        pass
 
-    if len(desc_html) < 100:
+    # Фолбэк, если описания нет или оно слишком короткое
+    if len(desc_html) < 50:
         try:
-            url2 = f"https://wbx-content-v2.wbstatic.net/ru/{nm_id}.json"
-            js2 = requests.get(url2, timeout=10).json()
+            full = requests.get(
+                f"https://wbx-content-v2.wbstatic.net/ru/{nm_id}.json",
+                timeout=10,
+            ).json()
             desc_html = (
-                js2.get("descriptionHtml") or js2.get("description") or desc_html
+                full.get("descriptionHtml") or full.get("description") or desc_html
             )
         except Exception:
             pass
