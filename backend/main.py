@@ -5,6 +5,8 @@ import logging
 import os
 import secrets
 import sqlite3
+import re
+import html
 
 import jwt
 import openai
@@ -193,15 +195,43 @@ def create_account(email: str, quota: int, inv: str):
     return token
 
 
-def wb_text(url: str) -> str:
-    """Return meta description from a Wildberries product page."""
-    try:
-        html = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10).text
-        soup = BeautifulSoup(html, "html.parser")
-        meta = soup.find("meta", {"name": "description"})
-        return meta["content"] if meta else url
-    except Exception:
+def wb_card_text(url: str, keep_html: bool = False) -> str:
+    """Возвращает полноценное описание товара Wildberries.
+
+    Args:
+        url: https://www.wildberries.ru/catalog/<nmID>/detail.aspx
+        keep_html: True — вернуть HTML как есть, False — plain-text с \n.
+    """
+    m = re.search(r"/catalog/(\d+)/", url)
+    if not m:
         return url
+    nm_id = int(m.group(1))
+
+    api = (
+        f"https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm_id}"
+    )
+    try:
+        prod = requests.get(api, timeout=10).json()["data"]["products"][0]
+        desc_html = prod.get("description") or ""
+    except Exception:
+        desc_html = ""
+
+    if len(desc_html) < 100:
+        try:
+            url2 = f"https://wbx-content-v2.wbstatic.net/ru/{nm_id}.json"
+            js2 = requests.get(url2, timeout=10).json()
+            desc_html = (
+                js2.get("descriptionHtml") or js2.get("description") or desc_html
+            )
+        except Exception:
+            pass
+
+    if keep_html:
+        return desc_html or url
+
+    cleaned = desc_html.replace("<br>", "\n")
+    text = BeautifulSoup(cleaned, "html.parser").get_text("\n", strip=True)
+    return re.sub(r"\s{2,}", " ", html.unescape(text)) or url
 
 
 # ── API ───────────────────────────────────────
@@ -219,7 +249,7 @@ async def rewrite(r: Req, request: Request):
         return {"error": "NO_CREDITS"}
     prompt = r.prompt.strip()
     if prompt.startswith("http") and "wildberries.ru" in prompt:
-        prompt = wb_text(prompt)
+        prompt = wb_card_text(prompt)
     try:
         comp = client.chat.completions.create(
             model="gpt-4o-mini",
