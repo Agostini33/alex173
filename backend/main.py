@@ -340,7 +340,7 @@ async def get_next_inv():
 # Информация для тестовой страницы Robokassa
 @app.get("/rkinfo")
 async def rkinfo():
-    return {"pass1": PASS1, "pass2": PASS2, "crc_formula": CRC_FORMULA}
+    return {"crc_formula": CRC_FORMULA}
 
 
 @app.post("/payform")
