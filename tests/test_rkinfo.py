@@ -18,6 +18,6 @@ def test_rkinfo(monkeypatch):
     client = TestClient(app)
     resp = client.get('/rkinfo')
     js = resp.json()
-    assert js['pass1'] == 'p1'
-    assert js['pass2'] == 'p2'
+    assert 'pass1' not in js
+    assert 'pass2' not in js
     assert 'crc_formula' in js
