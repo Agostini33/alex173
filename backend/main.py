@@ -10,7 +10,7 @@ import sqlite3
 
 import jwt
 import openai
-import requests
+import requests, time
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -196,47 +196,48 @@ def create_account(email: str, quota: int, inv: str):
 
 
 def wb_card_text(url: str, keep_html: bool = False) -> str:
-    """Возвращает полноценное описание товара Wildberries.
-
-    Args:
-        url: https://www.wildberries.ru/catalog/<nmID>/detail.aspx
-        keep_html: True — вернуть HTML как есть, False — plain-text с \n.
+    """
+    Возвращает полное описание Wildberries.
+    Алгоритм:
+        1) wbx-content-v2  – всегда один JSON на nmID, содержит descriptionHtml
+        2) fallback: card.wb.ru (описание у первого товара)
     """
     m = re.search(r"/catalog/(\d+)/", url)
     if not m:
         return url
     nm_id = int(m.group(1))
 
-    api = f"https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm_id}"
+    # 1) основной источник
     desc_html = ""
     try:
-        js = requests.get(api, timeout=10).json()
-        prods = js["data"]["products"]
-        # ищем именно наш nmID
-        prod = next((p for p in prods if p.get("id") == nm_id), prods[0])
-        desc_html = prod.get("description") or ""
+        full = requests.get(
+            f"https://wbx-content-v2.wbstatic.net/ru/{nm_id}.json",
+            timeout=6,
+        ).json()
+        desc_html = full.get("descriptionHtml") or full.get("description") or ""
     except Exception:
         pass
 
-    # Фолбэк, если описания нет или оно слишком короткое
+    # 2) fallback, если wbx-content пустой / недоступен
     if len(desc_html) < 50:
         try:
-            full = requests.get(
-                f"https://wbx-content-v2.wbstatic.net/ru/{nm_id}.json",
-                timeout=10,
-            ).json()
-            desc_html = (
-                full.get("descriptionHtml") or full.get("description") or desc_html
-            )
+            api = f"https://card.wb.ru/cards/detail?appType=1&curr=rub&nm={nm_id}"
+            js = requests.get(api, timeout=6).json()
+            prods = js.get("data", {}).get("products", [])
+            if prods:
+                prod = next((p for p in prods if p.get("id") == nm_id or p.get("root") == nm_id), prods[0])
+                desc_html = prod.get("description") or desc_html
         except Exception:
             pass
 
     if keep_html:
         return desc_html or url
 
-    cleaned = desc_html.replace("<br>", "\n")
+    # нормализуем: <br>, <p>, <li> -> \n
+    cleaned = re.sub(r"</?(p|li|br)[^>]*>", "\n", desc_html, flags=re.I)
     text = BeautifulSoup(cleaned, "html.parser").get_text("\n", strip=True)
-    return re.sub(r"\s{2,}", " ", html.unescape(text)) or url
+    text = re.sub(r"\s+\n", "\n", text)
+    return re.sub(r"[ \t]{2,}", " ", html.unescape(text)) or url
 
 
 # ── API ───────────────────────────────────────

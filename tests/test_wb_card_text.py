@@ -46,3 +46,29 @@ def test_select_correct_product(monkeypatch):
     text = m.wb_card_text(f"https://www.wildberries.ru/catalog/{nm}/detail.aspx")
     assert "Rasyan" in text
     assert "wrong" not in text
+
+
+def test_wbx_content_first(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    m = reload_main()
+    nm = 54321
+    js = {"descriptionHtml": "<p>Good desc from wbx that is definitely long enough to use</p>"}
+
+    class Resp:
+        def __init__(self, data):
+            self._data = data
+
+        def json(self):
+            return self._data
+
+    def fake_get(url, timeout=10):
+        if url.startswith("https://wbx-content-v2.wbstatic.net/ru"):
+            return Resp(js)
+        if url.startswith("https://card.wb.ru"):
+            return Resp({"data": {"products": [{"id": nm, "description": "wrong"}]}})
+        raise AssertionError(url)
+
+    monkeypatch.setattr(m.requests, "get", fake_get)
+    text = m.wb_card_text(f"https://www.wildberries.ru/catalog/{nm}/detail.aspx")
+    assert "Good desc from wbx" in text
+    assert "wrong" not in text
