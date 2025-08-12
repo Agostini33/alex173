@@ -60,6 +60,7 @@ def get_text(url: str) -> str:
             ),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": os.getenv("WB_LANG", "ru-RU,ru;q=0.9,en-US;q=0.8"),
+            "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive",
             "Referer": "https://www.wildberries.ru/",
         }
