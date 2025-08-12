@@ -7,10 +7,11 @@ import os
 import re
 import secrets
 import sqlite3
+import time
 
 import jwt
 import openai
-import requests, time
+import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -197,47 +198,205 @@ def create_account(email: str, quota: int, inv: str):
 
 def wb_card_text(url: str, keep_html: bool = False) -> str:
     """
-    Возвращает полное описание Wildberries.
-    Алгоритм:
-        1) wbx-content-v2  – всегда один JSON на nmID, содержит descriptionHtml
-        2) fallback: card.wb.ru (описание у первого товара)
+    Возвращает *имя + подробное описание* товара WB, устойчиво к блокировкам.
+    Источники по порядку:
+      1) wbx-content-v2
+      2) card.wb.ru (строго по id/root == nmID и непустому description)
+      3) static-basket-0X
+      4) HTML: __NEXT_DATA__ и/или <script type="application/ld+json">
+    Поддержка env:
+      WB_UA      — переопределить User-Agent
+      WB_COOKIES — "k1=v1; k2=v2; ..."
     """
     m = re.search(r"/catalog/(\d+)/", url)
     if not m:
         return url
     nm_id = int(m.group(1))
 
-    # 1) основной источник
-    desc_html = ""
+    def _pick_name(d: dict) -> str:
+        for k in ("name", "imt_name", "object"):
+            v = d.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+
+    JSON_FIELDS = [
+        "descriptionHtml",
+        "descriptionFull",
+        "description",
+        "descriptionShort",
+    ]
+
+    s = requests.Session()
+    ua = os.getenv(
+        "WB_UA",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36",
+    )
+    s.headers.update(
+        {
+            "User-Agent": ua,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": os.getenv("WB_LANG", "ru-RU,ru;q=0.9,en-US;q=0.8"),
+            "Connection": "keep-alive",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Referer": "https://www.wildberries.ru/",
+        }
+    )
+    cookies_env = os.getenv("WB_COOKIES", "")
+    if cookies_env:
+        for part in cookies_env.split(";"):
+            if "=" in part:
+                k, v = part.strip().split("=", 1)
+                s.cookies.set(k.strip(), v.strip(), domain=".wildberries.ru")
+
+    name, desc_html = "", ""
+
+    # 1) wbx-content-v2
     try:
-        full = requests.get(
-            f"https://wbx-content-v2.wbstatic.net/ru/{nm_id}.json",
-            timeout=6,
+        js = s.get(
+            f"https://wbx-content-v2.wbstatic.net/ru/{nm_id}.json", timeout=6
         ).json()
-        desc_html = full.get("descriptionHtml") or full.get("description") or ""
+        name = _pick_name(js) or name
+        for f in JSON_FIELDS:
+            if js.get(f):
+                desc_html = js[f]
+                break
     except Exception:
         pass
 
-    # 2) fallback, если wbx-content пустой / недоступен
+    # 2) card.wb.ru — строго свой id/root и непустое description
     if len(desc_html) < 50:
         try:
-            api = f"https://card.wb.ru/cards/detail?appType=1&curr=rub&nm={nm_id}"
-            js = requests.get(api, timeout=6).json()
-            prods = js.get("data", {}).get("products", [])
-            if prods:
-                prod = next((p for p in prods if p.get("id") == nm_id or p.get("root") == nm_id), prods[0])
+            js = s.get(
+                f"https://card.wb.ru/cards/detail?appType=1&curr=rub&nm={nm_id}",
+                timeout=6,
+            ).json()
+            prods = js.get("data", {}).get("products", []) or []
+            prod = next(
+                (
+                    p
+                    for p in prods
+                    if (p.get("id") == nm_id or p.get("root") == nm_id)
+                    and p.get("description")
+                ),
+                None,
+            )
+            if prod:
+                name = _pick_name(prod) or name
                 desc_html = prod.get("description") or desc_html
         except Exception:
             pass
 
-    if keep_html:
-        return desc_html or url
+    # 3) static-basket-0X — пробуем несколько хостов
+    if len(desc_html) < 50:
+        vol, part = nm_id // 100000, nm_id // 1000
+        for i in range(1, 13):
+            host = f"https://static-basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json"
+            try:
+                js = s.get(host, timeout=6).json()
+                name = _pick_name(js) or name
+                for f in JSON_FIELDS:
+                    if js.get(f):
+                        desc_html = js[f]
+                        break
+                if len(desc_html) >= 50:
+                    break
+            except Exception:
+                continue
 
-    # нормализуем: <br>, <p>, <li> -> \n
-    cleaned = re.sub(r"</?(p|li|br)[^>]*>", "\n", desc_html, flags=re.I)
+    # 4) HTML-фоллбек: __NEXT_DATA__ и/или ld+json
+    def _looks_challenge(t: str) -> bool:
+        low = (t or "").lower()
+        for mark in (
+            "ddos-guard",
+            "captcha",
+            "__ddginit",
+            "проверка безопасности",
+            "проверяем ваш браузер",
+        ):
+            if mark in low:
+                return True
+        return False
+
+    if len(desc_html) < 50:
+        try:
+            s.get("https://www.wildberries.ru/", timeout=6)
+            time.sleep(0.3)
+            r = s.get(url, timeout=8, allow_redirects=True)
+            txt = r.text
+            tries = 2
+            while tries and _looks_challenge(txt):
+                time.sleep(1.0)
+                r = s.get(url, timeout=8, allow_redirects=True)
+                txt = r.text
+                tries -= 1
+
+            m = re.search(
+                r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+                txt,
+                re.S,
+            )
+            if m:
+                try:
+                    j = json.loads(m.group(1))
+                    prod = (
+                        j.get("props", {})
+                        .get("pageProps", {})
+                        .get("initialState", {})
+                        .get("products", {})
+                    )
+                    name = _pick_name(prod) or name
+                    desc_html = (
+                        prod.get("descriptionFull")
+                        or prod.get("description")
+                        or desc_html
+                    )
+                except Exception:
+                    pass
+
+            if len(desc_html) < 50:
+                soup = BeautifulSoup(txt, "html.parser")
+                for tag in soup.find_all("script", {"type": "application/ld+json"}):
+                    try:
+                        data = json.loads(tag.string or "{}")
+                    except Exception:
+                        continue
+                    if isinstance(data, list):
+                        for it in data:
+                            if (
+                                isinstance(it, dict)
+                                and it.get("@type") == "Product"
+                                and it.get("description")
+                            ):
+                                name = it.get("name") or name
+                                desc_html = it.get("description")
+                                break
+                    elif (
+                        isinstance(data, dict)
+                        and data.get("@type") == "Product"
+                        and data.get("description")
+                    ):
+                        name = data.get("name") or name
+                        desc_html = data.get("description")
+                    if len(desc_html) >= 50:
+                        break
+        except Exception:
+            pass
+
+    if keep_html:
+        return (
+            (name + "\n\n" + (desc_html or "")).strip() if (name or desc_html) else url
+        )
+
+    cleaned = re.sub(r"</?(p|li|br|ul|ol)[^>]*>", "\n", desc_html or "", flags=re.I)
     text = BeautifulSoup(cleaned, "html.parser").get_text("\n", strip=True)
     text = re.sub(r"\s+\n", "\n", text)
-    return re.sub(r"[ \t]{2,}", " ", html.unescape(text)) or url
+    payload = (name or str(nm_id)) + "\n\n" + text
+    payload = re.sub(r"[ \t]{2,}", " ", html.unescape(payload)).strip()
+    return payload if len(text) >= 50 else url
 
 
 # ── API ───────────────────────────────────────
@@ -255,7 +414,13 @@ async def rewrite(r: Req, request: Request):
         return {"error": "NO_CREDITS"}
     prompt = r.prompt.strip()
     if prompt.startswith("http") and "wildberries.ru" in prompt:
-        prompt = wb_card_text(prompt)
+        fetched = wb_card_text(prompt)
+        if fetched == prompt or len(fetched) < 60:
+            return {
+                "error": "WB_FETCH_FAILED",
+                "hint": "Попробуйте позже или укажите WB_COOKIES/WB_UA.",
+            }
+        prompt = fetched
     try:
         comp = client.chat.completions.create(
             model="gpt-4o-mini",

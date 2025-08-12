@@ -34,14 +34,22 @@ def test_select_correct_product(monkeypatch):
         def json(self):
             return self._data
 
-    def fake_get(url, timeout=10):
+    def fake_get(url, timeout=10, allow_redirects=True):
         if url.startswith("https://card.wb.ru/cards/detail"):
             return Resp(js)
-        elif url.startswith("https://wbx-content-v2.wbstatic.net/ru"):
+        if url.startswith("https://wbx-content-v2.wbstatic.net/ru"):
             return Resp({})
         raise AssertionError(url)
 
-    monkeypatch.setattr(m.requests, "get", fake_get)
+    class DummySession:
+        def __init__(self):
+            self.headers = {}
+            self.cookies = m.requests.cookies.RequestsCookieJar()
+
+        def get(self, url, timeout=10, allow_redirects=True):
+            return fake_get(url, timeout, allow_redirects)
+
+    monkeypatch.setattr(m.requests, "Session", lambda: DummySession())
 
     text = m.wb_card_text(f"https://www.wildberries.ru/catalog/{nm}/detail.aspx")
     assert "Rasyan" in text
@@ -52,7 +60,9 @@ def test_wbx_content_first(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     m = reload_main()
     nm = 54321
-    js = {"descriptionHtml": "<p>Good desc from wbx that is definitely long enough to use</p>"}
+    js = {
+        "descriptionHtml": "<p>Good desc from wbx that is definitely long enough to use</p>"
+    }
 
     class Resp:
         def __init__(self, data):
@@ -61,14 +71,22 @@ def test_wbx_content_first(monkeypatch):
         def json(self):
             return self._data
 
-    def fake_get(url, timeout=10):
+    def fake_get(url, timeout=10, allow_redirects=True):
         if url.startswith("https://wbx-content-v2.wbstatic.net/ru"):
             return Resp(js)
         if url.startswith("https://card.wb.ru"):
             return Resp({"data": {"products": [{"id": nm, "description": "wrong"}]}})
         raise AssertionError(url)
 
-    monkeypatch.setattr(m.requests, "get", fake_get)
+    class DummySession:
+        def __init__(self):
+            self.headers = {}
+            self.cookies = m.requests.cookies.RequestsCookieJar()
+
+        def get(self, url, timeout=10, allow_redirects=True):
+            return fake_get(url, timeout, allow_redirects)
+
+    monkeypatch.setattr(m.requests, "Session", lambda: DummySession())
     text = m.wb_card_text(f"https://www.wildberries.ru/catalog/{nm}/detail.aspx")
     assert "Good desc from wbx" in text
     assert "wrong" not in text
