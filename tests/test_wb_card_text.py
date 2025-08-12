@@ -39,6 +39,8 @@ def test_select_correct_product(monkeypatch):
             return Resp(js)
         if url.startswith("https://wbx-content-v2.wbstatic.net/ru"):
             return Resp({})
+        if "static-basket" in url:
+            return Resp({})
         raise AssertionError(url)
 
     class DummySession:
@@ -61,7 +63,7 @@ def test_wbx_content_first(monkeypatch):
     m = reload_main()
     nm = 54321
     js = {
-        "descriptionHtml": "<p>Good desc from wbx that is definitely long enough to use</p>"
+        "descriptionHtml": "<p>Good desc from wbx that is definitely long enough to use and even longer for testing</p>"
     }
 
     class Resp:
@@ -74,6 +76,8 @@ def test_wbx_content_first(monkeypatch):
     def fake_get(url, timeout=10, allow_redirects=True):
         if url.startswith("https://wbx-content-v2.wbstatic.net/ru"):
             return Resp(js)
+        if "static-basket" in url:
+            return Resp({})
         if url.startswith("https://card.wb.ru"):
             return Resp({"data": {"products": [{"id": nm, "description": "wrong"}]}})
         raise AssertionError(url)
