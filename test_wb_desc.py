@@ -16,9 +16,6 @@ EXPECTED_SNIPPETS = [
     "Способ применения:",
 ]
 
-JSON_FIELDS = ["descriptionHtml", "descriptionFull", "description", "descriptionShort"]
-
-
 def pick_name(d: dict) -> str:
     for k in ("name", "imt_name", "object"):
         v = d.get(k)
@@ -60,33 +57,43 @@ def get_text(url: str) -> str:
             ),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": os.getenv("WB_LANG", "ru-RU,ru;q=0.9,en-US;q=0.8"),
-            "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive",
             "Referer": "https://www.wildberries.ru/",
         }
     )
-    cookies_env = os.getenv("WB_COOKIES", "")
-    for part in cookies_env.split(";"):
-        if "=" in part:
-            k, v = part.strip().split("=", 1)
-            s.cookies.set(k.strip(), v.strip(), domain=".wildberries.ru")
 
     name, desc_html = "", ""
 
-    # 1) wbx-content
+    # 1) wbx-content-v2
     try:
         js = s.get(
             f"https://wbx-content-v2.wbstatic.net/ru/{nm_id}.json", timeout=6
         ).json()
         name = pick_name(js) or name
-        for f in JSON_FIELDS:
-            if js.get(f):
-                desc_html = js[f]
-                break
+        desc_html = js.get("descriptionHtml") or js.get("description") or desc_html
     except Exception:
         pass
 
-    # 2) card.wb.ru
+    # 2) static-basket-0X
+    if len(desc_html) < 50:
+        vol, part = nm_id // 100000, nm_id // 1000
+        for i in range(1, 13):
+            try:
+                js = s.get(
+                    f"https://static-basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json",
+                    timeout=6,
+                ).json()
+                name = pick_name(js) or name
+                for f in ("descriptionHtml", "descriptionFull", "description", "descriptionShort"):
+                    if js.get(f):
+                        desc_html = js[f]
+                        break
+                if len(desc_html) >= 50:
+                    break
+            except Exception:
+                continue
+
+    # 3) card.wb.ru
     if len(desc_html) < 50:
         try:
             js = s.get(
@@ -109,26 +116,7 @@ def get_text(url: str) -> str:
         except Exception:
             pass
 
-    # 3) static-basket
-    if len(desc_html) < 50:
-        vol, part = nm_id // 100000, nm_id // 1000
-        for i in range(1, 13):
-            try:
-                js = s.get(
-                    f"https://static-basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json",
-                    timeout=6,
-                ).json()
-                name = pick_name(js) or name
-                for f in JSON_FIELDS:
-                    if js.get(f):
-                        desc_html = js[f]
-                        break
-                if len(desc_html) >= 50:
-                    break
-            except Exception:
-                continue
-
-    # 4) HTML
+    # 4) HTML-фоллбек
     if len(desc_html) < 50:
         try:
             s.get("https://www.wildberries.ru/", timeout=6)

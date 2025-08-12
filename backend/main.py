@@ -201,8 +201,8 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
     Возвращает *имя + подробное описание* товара WB, устойчиво к блокировкам.
     Источники по порядку:
       1) wbx-content-v2
-      2) card.wb.ru (строго по id/root == nmID и непустому description)
-      3) static-basket-0X
+      2) static-basket-0X
+      3) card.wb.ru (строго по id/root == nmID и непустому description)
       4) HTML: __NEXT_DATA__ и/или <script type="application/ld+json">
     Поддержка env:
       WB_UA      — переопределить User-Agent
@@ -239,7 +239,6 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
             "User-Agent": ua,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": os.getenv("WB_LANG", "ru-RU,ru;q=0.9,en-US;q=0.8"),
-            "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive",
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
@@ -261,14 +260,28 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
             f"https://wbx-content-v2.wbstatic.net/ru/{nm_id}.json", timeout=6
         ).json()
         name = _pick_name(js) or name
-        for f in JSON_FIELDS:
-            if js.get(f):
-                desc_html = js[f]
-                break
+        desc_html = js.get("descriptionHtml") or js.get("description") or desc_html
     except Exception:
         pass
 
-    # 2) card.wb.ru — строго свой id/root и непустое description
+    # 2) static-basket-0X — пробуем несколько хостов
+    if len(desc_html) < 50:
+        vol, part = nm_id // 100000, nm_id // 1000
+        for i in range(1, 13):
+            host = f"https://static-basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json"
+            try:
+                js = s.get(host, timeout=6).json()
+                name = _pick_name(js) or name
+                for f in JSON_FIELDS:
+                    if js.get(f):
+                        desc_html = js[f]
+                        break
+                if len(desc_html) >= 50:
+                    break
+            except Exception:
+                continue
+
+    # 3) card.wb.ru — строго свой id/root и непустое description
     if len(desc_html) < 50:
         try:
             js = s.get(
@@ -290,23 +303,6 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
                 desc_html = prod.get("description") or desc_html
         except Exception:
             pass
-
-    # 3) static-basket-0X — пробуем несколько хостов
-    if len(desc_html) < 50:
-        vol, part = nm_id // 100000, nm_id // 1000
-        for i in range(1, 13):
-            host = f"https://static-basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json"
-            try:
-                js = s.get(host, timeout=6).json()
-                name = _pick_name(js) or name
-                for f in JSON_FIELDS:
-                    if js.get(f):
-                        desc_html = js[f]
-                        break
-                if len(desc_html) >= 50:
-                    break
-            except Exception:
-                continue
 
     # 4) HTML-фоллбек: __NEXT_DATA__ и/или ld+json
     def _looks_challenge(t: str) -> bool:
@@ -397,7 +393,7 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
     text = re.sub(r"\s+\n", "\n", text)
     payload = (name or str(nm_id)) + "\n\n" + text
     payload = re.sub(r"[ \t]{2,}", " ", html.unescape(payload)).strip()
-    return payload if len(text) >= 50 else url
+    return payload if len(text) >= 60 else url
 
 
 # ── API ───────────────────────────────────────
