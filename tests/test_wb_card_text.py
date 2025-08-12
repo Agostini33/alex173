@@ -15,7 +15,9 @@ def test_select_correct_product(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     m = reload_main()
     nm = 12345
-    right_desc = "Rasyan toothpaste description that is definitely long enough to pass"  # >50 chars
+    right_desc = (
+        "Rasyan toothpaste description that is definitely long enough to pass"
+    )
     wrong_desc = "wrong product"
 
     js = {
@@ -34,19 +36,20 @@ def test_select_correct_product(monkeypatch):
         def json(self):
             return self._data
 
+        @property
+        def headers(self):
+            return {"Content-Type": "application/json"}
+
     def fake_get(url, timeout=10, allow_redirects=True):
         if url.startswith("https://card.wb.ru/cards/detail"):
             return Resp(js)
-        if url.startswith("https://wbx-content-v2.wbstatic.net/ru"):
-            return Resp({})
-        if "static-basket" in url:
+        if "basket" in url:
             return Resp({})
         raise AssertionError(url)
 
     class DummySession:
         def __init__(self):
             self.headers = {}
-            self.cookies = m.requests.cookies.RequestsCookieJar()
 
         def get(self, url, timeout=10, allow_redirects=True):
             return fake_get(url, timeout, allow_redirects)
@@ -58,12 +61,12 @@ def test_select_correct_product(monkeypatch):
     assert "wrong" not in text
 
 
-def test_wbx_content_first(monkeypatch):
+def test_basket_first(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     m = reload_main()
     nm = 54321
     js = {
-        "descriptionHtml": "<p>Good desc from wbx that is definitely long enough to use and even longer for testing</p>"
+        "descriptionHtml": "<p>Good desc from basket that is definitely long enough for testing purposes and beyond</p>"
     }
 
     class Resp:
@@ -73,8 +76,12 @@ def test_wbx_content_first(monkeypatch):
         def json(self):
             return self._data
 
+        @property
+        def headers(self):
+            return {"Content-Type": "application/json"}
+
     def fake_get(url, timeout=10, allow_redirects=True):
-        if url.startswith("https://wbx-content-v2.wbstatic.net/ru"):
+        if url.startswith("https://basket-"):
             return Resp(js)
         if "static-basket" in url:
             return Resp({})
@@ -85,12 +92,12 @@ def test_wbx_content_first(monkeypatch):
     class DummySession:
         def __init__(self):
             self.headers = {}
-            self.cookies = m.requests.cookies.RequestsCookieJar()
 
         def get(self, url, timeout=10, allow_redirects=True):
             return fake_get(url, timeout, allow_redirects)
 
     monkeypatch.setattr(m.requests, "Session", lambda: DummySession())
     text = m.wb_card_text(f"https://www.wildberries.ru/catalog/{nm}/detail.aspx")
-    assert "Good desc from wbx" in text
+    assert "Good desc from basket" in text
     assert "wrong" not in text
+
