@@ -7,7 +7,6 @@ import os
 import re
 import secrets
 import sqlite3
-import time
 
 import jwt
 import openai
@@ -198,15 +197,11 @@ def create_account(email: str, quota: int, inv: str):
 
 def wb_card_text(url: str, keep_html: bool = False) -> str:
     """
-    Возвращает *имя + подробное описание* товара WB, устойчиво к блокировкам.
+    Возвращает *имя + подробное описание* товара WB.
     Источники по порядку:
-      1) wbx-content-v2
-      2) static-basket-0X
+      1) basket-{01..12}.wb.ru
+      2) static-basket-{01..12}.wb.ru
       3) card.wb.ru (строго по id/root == nmID и непустому description)
-      4) HTML: __NEXT_DATA__ и/или <script type="application/ld+json">
-    Поддержка env:
-      WB_UA      — переопределить User-Agent
-      WB_COOKIES — "k1=v1; k2=v2; ..."
     """
     m = re.search(r"/catalog/(\d+)/", url)
     if not m:
@@ -228,172 +223,72 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
     ]
 
     s = requests.Session()
-    ua = os.getenv(
-        "WB_UA",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36",
-    )
-    s.headers.update(
-        {
-            "User-Agent": ua,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": os.getenv("WB_LANG", "ru-RU,ru;q=0.9,en-US;q=0.8"),
-            "Connection": "keep-alive",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-            "Referer": "https://www.wildberries.ru/",
-        }
-    )
-    cookies_env = os.getenv("WB_COOKIES", "")
-    if cookies_env:
-        for part in cookies_env.split(";"):
-            if "=" in part:
-                k, v = part.strip().split("=", 1)
-                s.cookies.set(k.strip(), v.strip(), domain=".wildberries.ru")
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " \
+        "AppleWebKit/537.36 (KHTML, like Gecko) " \
+        "Chrome/124.0.0.0 Safari/537.36"
+    s.headers.update({"User-Agent": ua, "Accept": "application/json"})
 
     name, desc_html = "", ""
+    vol, part = nm_id // 100000, nm_id // 1000
 
-    # 1) wbx-content-v2
-    try:
-        js = s.get(
-            f"https://wbx-content-v2.wbstatic.net/ru/{nm_id}.json", timeout=6
-        ).json()
-        name = _pick_name(js) or name
-        desc_html = js.get("descriptionHtml") or js.get("description") or desc_html
-    except Exception:
-        pass
-
-    # 2) static-basket-0X — пробуем несколько хостов
-    if len(desc_html) < 50:
-        vol, part = nm_id // 100000, nm_id // 1000
+    for host_tpl in (
+        "https://basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm}/info/ru/card.json",
+        "https://static-basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm}/info/ru/card.json",
+    ):
+        if desc_html:
+            break
         for i in range(1, 13):
-            host = f"https://static-basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json"
             try:
-                js = s.get(host, timeout=6).json()
+                r = s.get(host_tpl.format(i=i, vol=vol, part=part, nm=nm_id), timeout=6)
+                if "application/json" not in r.headers.get("Content-Type", ""):
+                    continue
+                js = r.json()
                 name = _pick_name(js) or name
                 for f in JSON_FIELDS:
                     if js.get(f):
                         desc_html = js[f]
                         break
-                if len(desc_html) >= 50:
+                if desc_html:
                     break
             except Exception:
                 continue
 
-    # 3) card.wb.ru — строго свой id/root и непустое description
-    if len(desc_html) < 50:
+    if not desc_html:
         try:
-            js = s.get(
+            r = s.get(
                 f"https://card.wb.ru/cards/detail?appType=1&curr=rub&nm={nm_id}",
                 timeout=6,
-            ).json()
-            prods = js.get("data", {}).get("products", []) or []
-            prod = next(
-                (
-                    p
-                    for p in prods
-                    if (p.get("id") == nm_id or p.get("root") == nm_id)
-                    and p.get("description")
-                ),
-                None,
             )
-            if prod:
-                name = _pick_name(prod) or name
-                desc_html = prod.get("description") or desc_html
-        except Exception:
-            pass
-
-    # 4) HTML-фоллбек: __NEXT_DATA__ и/или ld+json
-    def _looks_challenge(t: str) -> bool:
-        low = (t or "").lower()
-        for mark in (
-            "ddos-guard",
-            "captcha",
-            "__ddginit",
-            "проверка безопасности",
-            "проверяем ваш браузер",
-        ):
-            if mark in low:
-                return True
-        return False
-
-    if len(desc_html) < 50:
-        try:
-            s.get("https://www.wildberries.ru/", timeout=6)
-            time.sleep(0.3)
-            r = s.get(url, timeout=8, allow_redirects=True)
-            txt = r.text
-            tries = 2
-            while tries and _looks_challenge(txt):
-                time.sleep(1.0)
-                r = s.get(url, timeout=8, allow_redirects=True)
-                txt = r.text
-                tries -= 1
-
-            m = re.search(
-                r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-                txt,
-                re.S,
-            )
-            if m:
-                try:
-                    j = json.loads(m.group(1))
-                    prod = (
-                        j.get("props", {})
-                        .get("pageProps", {})
-                        .get("initialState", {})
-                        .get("products", {})
-                    )
+            if "application/json" in r.headers.get("Content-Type", ""):
+                js = r.json()
+                prods = js.get("data", {}).get("products", []) or []
+                prod = next(
+                    (
+                        p
+                        for p in prods
+                        if (p.get("id") == nm_id or p.get("root") == nm_id)
+                        and p.get("description")
+                    ),
+                    None,
+                )
+                if prod:
                     name = _pick_name(prod) or name
-                    desc_html = (
-                        prod.get("descriptionFull")
-                        or prod.get("description")
-                        or desc_html
-                    )
-                except Exception:
-                    pass
-
-            if len(desc_html) < 50:
-                soup = BeautifulSoup(txt, "html.parser")
-                for tag in soup.find_all("script", {"type": "application/ld+json"}):
-                    try:
-                        data = json.loads(tag.string or "{}")
-                    except Exception:
-                        continue
-                    if isinstance(data, list):
-                        for it in data:
-                            if (
-                                isinstance(it, dict)
-                                and it.get("@type") == "Product"
-                                and it.get("description")
-                            ):
-                                name = it.get("name") or name
-                                desc_html = it.get("description")
-                                break
-                    elif (
-                        isinstance(data, dict)
-                        and data.get("@type") == "Product"
-                        and data.get("description")
-                    ):
-                        name = data.get("name") or name
-                        desc_html = data.get("description")
-                    if len(desc_html) >= 50:
-                        break
+                    desc_html = prod.get("description") or desc_html
         except Exception:
             pass
-
-    if keep_html:
-        return (
-            (name + "\n\n" + (desc_html or "")).strip() if (name or desc_html) else url
-        )
 
     cleaned = re.sub(r"</?(p|li|br|ul|ol)[^>]*>", "\n", desc_html or "", flags=re.I)
     text = BeautifulSoup(cleaned, "html.parser").get_text("\n", strip=True)
     text = re.sub(r"\s+\n", "\n", text)
-    payload = (name or str(nm_id)) + "\n\n" + text
-    payload = re.sub(r"[ \t]{2,}", " ", html.unescape(payload)).strip()
-    return payload if len(text) >= 60 else url
+    text = re.sub(r"[ \t]{2,}", " ", html.unescape(text)).strip()
+
+    if len(text) < 60:
+        return url
+
+    if keep_html:
+        return (name + "\n\n" + (desc_html or "")).strip()
+
+    return (name + "\n\n" + text).strip()
 
 
 # ── API ───────────────────────────────────────
