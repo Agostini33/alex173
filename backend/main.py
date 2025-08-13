@@ -348,12 +348,44 @@ def _extract_json(s: str):
         return json.loads(s)
     except Exception:
         pass
+    # 1) Попробовать вытащить из ```json ... ```
     try:
-        m = re.search(r"\{.*\}", s, flags=re.S)
+        m = re.search(r"```(?:json)?\s*({[\s\S]*?})\s*```", s, flags=re.I)
         if m:
-            return json.loads(m.group(0))
+            d = json.loads(m.group(1))
+            if _schema_ok(d):
+                return d
     except Exception:
-        return None
+        pass
+    # 2) Сбалансированный поиск первого JSON-объекта
+    try:
+        start = s.find("{")
+        if start != -1:
+            depth = 0
+            for i, ch in enumerate(s[start:], start=start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        d = json.loads(s[start:i+1])
+                        if _schema_ok(d):
+                            return d
+                        break
+    except Exception:
+        pass
+    return None
+
+
+def _schema_ok(d):
+    if not isinstance(d, dict):
+        return False
+    b = d.get("bullets"); k = d.get("keywords")
+    if not isinstance(b, list) or not isinstance(k, list):
+        return False
+    if len(b) != 6 or len(k) != 20:
+        return False
+    return True
 
 
 def _uses_max_completion_tokens(model_name: str) -> bool:
