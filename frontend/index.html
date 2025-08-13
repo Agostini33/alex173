@@ -61,6 +61,8 @@ footer .contacts{margin-top:12px;font-size:14px;color:#333}
     <div class="field-header"><h3>Ключевые слова (CSV)</h3><button class="copy-btn" data-target="res-keys">Копировать</button></div>
     <textarea id="res-keys" rows="4" readonly></textarea>
   </div>
+  <!-- Неброский индикатор использованной LLM-модели -->
+  <div id="llmModel" style="font-size:12px;color:#888;margin-top:10px;"></div>
 </section>
 
 <section class="pricing">
@@ -119,12 +121,20 @@ document.querySelectorAll('.copy-btn').forEach(btn=>{
 $('#run').onclick = async ()=>{
   const prompt=$('#src').value.trim(); if(!prompt) return;
   $('#run').disabled=true; $('#run').textContent='Генерирую…';
-  const r = await fetch('https://api.wb6.ru/rewrite',{
-    method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-    body:JSON.stringify({supplierId:0,prompt})
-  });
-  const js = await r.json();
+  let js;
+  try{
+    const r = await fetch('https://api.wb6.ru/rewrite',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body:JSON.stringify({supplierId:0,prompt})
+    });
+    js = await r.json();
+  }catch(err){
+    console.error(err);
+    const el=document.getElementById('llmModel'); if(el) el.textContent='';
+    $('#run').disabled=false; $('#run').textContent='Сгенерировать';
+    return;
+  }
   if(js.error==='NO_CREDITS'){ location='pay.html'; return;}
   if(js.token){ token=js.token; localStorage.setItem('wb6_jwt',token); showQuota(); }
   if(js.title){
@@ -133,6 +143,10 @@ $('#run').onclick = async ()=>{
     $('#res-keys').value=(js.keywords||[]).join(', ');
     $('#res').style.display='block';
   }
+  try{
+    const el=document.getElementById('llmModel');
+    if(el) el.textContent=js && js.model_used ? ('LLM: '+js.model_used) : '';
+  }catch(e){}
   $('#run').disabled=false; $('#run').textContent='Сгенерировать';
 };
 </script>

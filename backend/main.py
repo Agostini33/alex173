@@ -473,8 +473,11 @@ async def rewrite(r: Req, request: Request):
             )
         except Exception as e2:
             logging.error("GEN fallback (%s) failed: %s", MODEL_FALLBACK, e2)
-            return {"error": f"GEN_FAIL: {type(e2).__name__}: {e2}"}
-
+            return {
+                "error": f"GEN_FAIL: {type(e2).__name__}: {e2}",
+                "model_tried": [MODEL, MODEL_FALLBACK],
+            }
+    used_model = getattr(comp, "model", MODEL)
     raw = comp.choices[0].message.content or ""
     data = _extract_json(raw)
     if not data:
@@ -491,6 +494,8 @@ async def rewrite(r: Req, request: Request):
                 max_tokens=OPENAI_MAX_TOKENS,
             )
             data = _extract_json(repair.choices[0].message.content or "")
+            if data:
+                used_model = getattr(repair, "model", used_model)
         except Exception as e3:
             logging.warning("Repair pass failed: %s", e3)
 
@@ -504,6 +509,7 @@ async def rewrite(r: Req, request: Request):
 
     return {
         "token": jwt.encode(info, SECRET, "HS256"),
+        "model_used": used_model,
         **data,
     }
 
