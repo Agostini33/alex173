@@ -30,6 +30,10 @@ if not OPENAI_KEY:
         "❌ OPENAI_API_KEY не установлен. Укажите его в Railway/GitHub Secrets."
     )
 client = openai.OpenAI(api_key=OPENAI_KEY)
+# Модель по умолчанию — GPT-5; можно переопределить через env
+MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
+# Фолбэк-модель на случай недоступности основной
+MODEL_FALLBACK = os.getenv("OPENAI_MODEL_FALLBACK", "gpt-4o-mini")
 
 # ✅ Robokassa Pass1/Pass2 (используются для подписи форм и callback'ов)
 PASS1 = os.getenv("ROBOKASSA_PASS1")
@@ -223,9 +227,11 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
     ]
 
     s = requests.Session()
-    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " \
-        "AppleWebKit/537.36 (KHTML, like Gecko) " \
+    ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
+    )
     s.headers.update({"User-Agent": ua, "Accept": "application/json"})
 
     name, desc_html = "", ""
@@ -313,16 +319,27 @@ async def rewrite(r: Req, request: Request):
                 "hint": "Попробуйте позже или укажите WB_COOKIES/WB_UA.",
             }
         prompt = fetched
+    # Генерация с моделью из ENV и безопасным фолбэком
     try:
         comp = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=MODEL,
             messages=[
                 {"role": "system", "content": PROMPT},
                 {"role": "user", "content": prompt},
             ],
         )
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as e1:
+        # Пытаемся автоматически переключиться на фолбэк-модель
+        try:
+            comp = client.chat.completions.create(
+                model=MODEL_FALLBACK,
+                messages=[
+                    {"role": "system", "content": PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+        except Exception as e2:
+            return {"error": f"{e2}"}
     info["quota"] -= 1
     if info["sub"] in ACCOUNTS:
         ACCOUNTS[info["sub"]]["quota"] = info["quota"]
