@@ -35,6 +35,7 @@ client = openai.OpenAI(api_key=OPENAI_KEY)
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
 # Фолбэк-модель на случай недоступности основной
 MODEL_FALLBACK = os.getenv("OPENAI_MODEL_FALLBACK", "gpt-4o-mini")
+OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "30"))
 WB_UA = os.getenv("WB_UA", "Mozilla/5.0")
 
 # ✅ Robokassa Pass1/Pass2 (используются для подписи форм и callback'ов)
@@ -406,9 +407,10 @@ async def rewrite(r: Req, request: Request):
                 "hint": "Попробуйте позже или укажите WB_COOKIES/WB_UA.",
             }
         prompt = fetched
-    # Генерация с моделью из ENV и безопасным фолбэком
+    # Генерация с явным тайм-аутом и безопасным фолбэком
+    gen = client.chat.completions.with_options(timeout=OPENAI_TIMEOUT)
     try:
-        comp = client.chat.completions.create(
+        comp = gen.create(
             model=MODEL,
             messages=[
                 {"role": "system", "content": PROMPT},
@@ -416,9 +418,9 @@ async def rewrite(r: Req, request: Request):
             ],
         )
     except Exception as e1:
-        # Пытаемся автоматически переключиться на фолбэк-модель
+        logging.error("GEN primary (%s) failed: %s", MODEL, e1)
         try:
-            comp = client.chat.completions.create(
+            comp = gen.create(
                 model=MODEL_FALLBACK,
                 messages=[
                     {"role": "system", "content": PROMPT},
@@ -426,7 +428,8 @@ async def rewrite(r: Req, request: Request):
                 ],
             )
         except Exception as e2:
-            return {"error": f"{e2}"}
+            logging.error("GEN fallback (%s) failed: %s", MODEL_FALLBACK, e2)
+            return {"error": f"GEN_FAIL: {type(e2).__name__}: {e2}"}
     info["quota"] -= 1
     if info["sub"] in ACCOUNTS:
         ACCOUNTS[info["sub"]]["quota"] = info["quota"]
@@ -434,6 +437,11 @@ async def rewrite(r: Req, request: Request):
         "token": jwt.encode(info, SECRET, "HS256"),
         **json.loads(comp.choices[0].message.content),
     }
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True, "model": MODEL, "fallback": MODEL_FALLBACK}
 
 
 # Robokassa ResultURL
