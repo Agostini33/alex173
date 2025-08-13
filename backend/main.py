@@ -44,8 +44,14 @@ MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
 MODEL_FALLBACK = os.getenv("OPENAI_MODEL_FALLBACK", "gpt-4o-mini")
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "30"))
 OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "600"))
-WB_UA = os.getenv("WB_UA", "Mozilla/5.0")
+WB_FETCH_TIMEOUT = float(os.getenv("WB_FETCH_TIMEOUT", "4.0"))
+WB_FETCH_ATTEMPTS = int(os.getenv("WB_FETCH_ATTEMPTS", "1"))
+WB_FETCH_MAX_HOSTS = int(os.getenv("WB_FETCH_MAX_HOSTS", "6"))
+WB_FETCH_TOTAL_BUDGET = float(os.getenv("WB_FETCH_TOTAL_BUDGET", "12.0"))
 EXPOSE_MODEL_ERRORS = os.getenv("EXPOSE_MODEL_ERRORS", "0") == "1"
+OPENAI_JSON_MODE = os.getenv("OPENAI_JSON_MODE", "schema").lower()  # schema|object|off
+OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
+WB_UA = os.getenv("WB_UA", "Mozilla/5.0")
 
 # ✅ Robokassa Pass1/Pass2 (используются для подписи форм и callback'ов)
 PASS1 = os.getenv("ROBOKASSA_PASS1")
@@ -355,6 +361,7 @@ def _extract_json(s: str):
             d = json.loads(m.group(1))
             if _schema_ok(d):
                 return d
+            return d
     except Exception:
         pass
     # 2) Сбалансированный поиск первого JSON-объекта
@@ -371,7 +378,7 @@ def _extract_json(s: str):
                         d = json.loads(s[start:i+1])
                         if _schema_ok(d):
                             return d
-                        break
+                        return d
     except Exception:
         pass
     return None
@@ -384,6 +391,8 @@ def _schema_ok(d):
     if not isinstance(b, list) or not isinstance(k, list):
         return False
     if len(b) != 6 or len(k) != 20:
+        return False
+    if not isinstance(d.get("title"), str):
         return False
     return True
 
@@ -403,6 +412,45 @@ def _uses_max_completion_tokens(model_name: str) -> bool:
     )
 
 
+def _json_response_format(model: str, want: str = OPENAI_JSON_MODE):
+    """
+    Вернёт dict для response_format или None.
+    want = schema|object|off
+    """
+    if not want or want == "off":
+        return None
+    if want == "schema":
+        # Жёсткая схема: ровно 6 bullets и 20 keywords, title <=100
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "wb6_schema",
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["title", "bullets", "keywords"],
+                    "properties": {
+                        "title": {"type": "string", "maxLength": 100},
+                        "bullets": {
+                            "type": "array",
+                            "items": {"type": "string", "maxLength": 120},
+                            "minItems": 6,
+                            "maxItems": 6,
+                        },
+                        "keywords": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 20,
+                            "maxItems": 20,
+                        },
+                    },
+                },
+            },
+        }
+    # object
+    return {"type": "json_object"}
+
+
 def _is_json_mode_unsupported(err: Exception) -> bool:
     """Грубая эвристика: модель не поддерживает response_format/json_object."""
     t = str(err).lower()
@@ -417,26 +465,52 @@ def _openai_chat(messages, model, max_tokens=OPENAI_MAX_TOKENS, json_mode: bool 
      - если есть .with_options(timeout=...), используем его;
      - иначе пробуем передать timeout прямо в .create();
      - если и это не поддерживается (старый SDK) — вызываем без тайм-аута.
-    Всегда просим строгий JSON.
+    По возможности просим строгий JSON (json_schema|json_object).
     """
     kwargs = dict(
         model=model,
         messages=messages,
     )
-    if json_mode:
-        kwargs["response_format"] = {"type": "json_object"}
+    # Температура
+    kwargs["temperature"] = OPENAI_TEMPERATURE
+    # Поддержка JSON-mode (схема/объект/выключено)
+    rf = _json_response_format(model, OPENAI_JSON_MODE) if json_mode else None
+    if rf:
+        kwargs["response_format"] = rf
     # Правильное имя параметра лимита токенов для конкретной модели
     if _uses_max_completion_tokens(model):
         kwargs["max_completion_tokens"] = max_tokens
     else:
         kwargs["max_tokens"] = max_tokens
+
     with_opts = getattr(client.chat.completions, "with_options", None)
     if callable(with_opts):
-        return with_opts(timeout=OPENAI_TIMEOUT).create(**kwargs)
+        try:
+            return with_opts(timeout=OPENAI_TIMEOUT).create(**kwargs)
+        except Exception as e:
+            # если json_schema не поддержан — фолбэк на json_object
+            if rf and rf.get("type") == "json_schema":
+                try:
+                    kwargs_fallback = dict(kwargs)
+                    kwargs_fallback["response_format"] = {"type": "json_object"}
+                    return with_opts(timeout=OPENAI_TIMEOUT).create(**kwargs_fallback)
+                except Exception:
+                    raise
+            raise
+    # Вариант 2: timeout в create (поддерживается в некоторых версиях)
     try:
         return client.chat.completions.create(timeout=OPENAI_TIMEOUT, **kwargs)
     except TypeError:
-        return client.chat.completions.create(**kwargs)
+        # Вариант 3: совсем без timeout параметра
+        try:
+            return client.chat.completions.create(**kwargs)
+        except Exception as e:
+            # фолбэк с json_object, если json_schema не поддержан
+            if rf and rf.get("type") == "json_schema":
+                kwargs_fb = dict(kwargs)
+                kwargs_fb["response_format"] = {"type": "json_object"}
+                return client.chat.completions.create(**kwargs_fb)
+            raise
 
 
 # --- Диагностика источников WB (без влияния на основную логику) ---
@@ -615,6 +689,7 @@ async def gentest(
     q: str = "Проверка генерации: сделай JSON {title, bullets[6], keywords[20]} для тестовой строки.",
     model: str | None = None,
     json: int = 1,
+    raw: int = 0,
 ):
     try:
         comp = _openai_chat(
@@ -626,15 +701,19 @@ async def gentest(
             max_tokens=min(OPENAI_MAX_TOKENS, 500),
             json_mode=bool(json),
         )
-        raw = comp.choices[0].message.content or ""
-        data = _extract_json(raw) or {}
-        return {
+        raw_text = comp.choices[0].message.content or ""
+        data = _extract_json(raw_text) or {}
+        resp = {
             "ok": True,
             "model": (model or MODEL),
             "fallback": MODEL_FALLBACK,
             "json_mode": bool(json),
+            "response_format": (OPENAI_JSON_MODE if bool(json) else "off"),
             "data_ok": bool(data),
         }
+        if raw:
+            resp["raw"] = raw_text[:2000]
+        return resp
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
