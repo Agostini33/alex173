@@ -356,6 +356,21 @@ def _extract_json(s: str):
         return None
 
 
+def _uses_max_completion_tokens(model_name: str) -> bool:
+    """
+    Эвристика: модели reasoning-поколения (gpt-5, gpt-4.1, o-серия)
+    в Chat Completions ожидают max_completion_tokens вместо max_tokens.
+    """
+    m = (model_name or "").lower()
+    return (
+        m.startswith("gpt-5")
+        or m.startswith("gpt-4.1")
+        or m.startswith("o1")
+        or m.startswith("o3")
+        or m.startswith("o4")
+    )
+
+
 def _is_json_mode_unsupported(err: Exception) -> bool:
     """Грубая эвристика: модель не поддерживает response_format/json_object."""
     t = str(err).lower()
@@ -370,15 +385,19 @@ def _openai_chat(messages, model, max_tokens=OPENAI_MAX_TOKENS, json_mode: bool 
      - если есть .with_options(timeout=...), используем его;
      - иначе пробуем передать timeout прямо в .create();
      - если и это не поддерживается (старый SDK) — вызываем без тайм-аута.
-    Опционально просим строгий JSON (json_mode).
+    Всегда просим строгий JSON.
     """
     kwargs = dict(
         model=model,
         messages=messages,
-        max_tokens=max_tokens,
     )
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    # Правильное имя параметра лимита токенов для конкретной модели
+    if _uses_max_completion_tokens(model):
+        kwargs["max_completion_tokens"] = max_tokens
+    else:
+        kwargs["max_tokens"] = max_tokens
     with_opts = getattr(client.chat.completions, "with_options", None)
     if callable(with_opts):
         return with_opts(timeout=OPENAI_TIMEOUT).create(**kwargs)
