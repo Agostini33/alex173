@@ -8,6 +8,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+from urllib.parse import quote as _urlquote
 
 import jwt
 import openai
@@ -16,7 +17,6 @@ from bs4 import BeautifulSoup
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from urllib.parse import quote as _urlquote
 
 # --- базовое логирование настраиваемо через ENV ---
 logging.basicConfig(
@@ -45,6 +45,7 @@ MODEL_FALLBACK = os.getenv("OPENAI_MODEL_FALLBACK", "gpt-4o-mini")
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "30"))
 OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "600"))
 WB_UA = os.getenv("WB_UA", "Mozilla/5.0")
+EXPOSE_MODEL_ERRORS = os.getenv("EXPOSE_MODEL_ERRORS", "0") == "1"
 
 # ✅ Robokassa Pass1/Pass2 (используются для подписи форм и callback'ов)
 PASS1 = os.getenv("ROBOKASSA_PASS1")
@@ -340,6 +341,7 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
 
     return (name + "\n\n" + text).strip()
 
+
 # --- утилита: безопасный парсинг JSON из ответа модели ---
 def _extract_json(s: str):
     try:
@@ -353,21 +355,30 @@ def _extract_json(s: str):
     except Exception:
         return None
 
+
+def _is_json_mode_unsupported(err: Exception) -> bool:
+    """Грубая эвристика: модель не поддерживает response_format/json_object."""
+    t = str(err).lower()
+    keys = ["response_format", "json", "not support", "unsupported", "does not support"]
+    return any(k in t for k in keys)
+
+
 # --- утилита: безопасный вызов OpenAI ---
-def _openai_chat(messages, model, max_tokens=OPENAI_MAX_TOKENS):
+def _openai_chat(messages, model, max_tokens=OPENAI_MAX_TOKENS, json_mode: bool = True):
     """
     Универсальный вызов chat.completions:
      - если есть .with_options(timeout=...), используем его;
      - иначе пробуем передать timeout прямо в .create();
      - если и это не поддерживается (старый SDK) — вызываем без тайм-аута.
-    Всегда просим строгий JSON.
+    Опционально просим строгий JSON (json_mode).
     """
     kwargs = dict(
         model=model,
         messages=messages,
-        response_format={"type": "json_object"},
         max_tokens=max_tokens,
     )
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
     with_opts = getattr(client.chat.completions, "with_options", None)
     if callable(with_opts):
         return with_opts(timeout=OPENAI_TIMEOUT).create(**kwargs)
@@ -451,6 +462,7 @@ async def rewrite(r: Req, request: Request):
                 "hint": "Попробуйте позже или укажите WB_COOKIES/WB_UA.",
             }
         prompt = fetched
+    model_flow = []
     try:
         comp = _openai_chat(
             messages=[
@@ -459,24 +471,50 @@ async def rewrite(r: Req, request: Request):
             ],
             model=MODEL,
             max_tokens=OPENAI_MAX_TOKENS,
+            json_mode=True,
         )
+        model_flow.append({"model": MODEL, "mode": "json"})
     except Exception as e1:
         logging.error("GEN primary (%s) failed: %s", MODEL, e1)
+        if _is_json_mode_unsupported(e1):
+            try:
+                comp = _openai_chat(
+                    messages=[
+                        {"role": "system", "content": PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    model=MODEL,
+                    max_tokens=OPENAI_MAX_TOKENS,
+                    json_mode=False,
+                )
+                model_flow.append({"model": MODEL, "mode": "nojson"})
+            except Exception as e1b:
+                logging.error("GEN primary-nojson (%s) failed: %s", MODEL, e1b)
+                e1 = e1b
+        if not model_flow:
+            pass
         try:
-            comp = _openai_chat(
-                messages=[
-                    {"role": "system", "content": PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                model=MODEL_FALLBACK,
-                max_tokens=OPENAI_MAX_TOKENS,
-            )
+            if not model_flow or comp is None:
+                comp = _openai_chat(
+                    messages=[
+                        {"role": "system", "content": PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    model=MODEL_FALLBACK,
+                    max_tokens=OPENAI_MAX_TOKENS,
+                    json_mode=True,
+                )
+                model_flow.append({"model": MODEL_FALLBACK, "mode": "json"})
         except Exception as e2:
             logging.error("GEN fallback (%s) failed: %s", MODEL_FALLBACK, e2)
-            return {
+            resp = {
                 "error": f"GEN_FAIL: {type(e2).__name__}: {e2}",
                 "model_tried": [MODEL, MODEL_FALLBACK],
+                "model_flow": model_flow,
             }
+            if EXPOSE_MODEL_ERRORS:
+                resp["model_error"] = {"primary": str(e1), "fallback": str(e2)}
+            return resp
     used_model = getattr(comp, "model", MODEL)
     raw = comp.choices[0].message.content or ""
     data = _extract_json(raw)
@@ -492,16 +530,21 @@ async def rewrite(r: Req, request: Request):
                 ],
                 model=MODEL_FALLBACK,
                 max_tokens=OPENAI_MAX_TOKENS,
+                json_mode=True,
             )
             data = _extract_json(repair.choices[0].message.content or "")
             if data:
                 used_model = getattr(repair, "model", used_model)
+                model_flow.append({"model": used_model, "mode": "repair"})
         except Exception as e3:
             logging.warning("Repair pass failed: %s", e3)
 
     if not data or not isinstance(data, dict):
         logging.error("Bad JSON from model. Raw: %s", raw[:500])
-        return {"error": "BAD_JSON", "raw": raw[:2000]}
+        resp = {"error": "BAD_JSON", "raw": raw[:2000], "model_flow": model_flow}
+        if EXPOSE_MODEL_ERRORS:
+            resp["model_used"] = used_model
+        return resp
 
     info["quota"] -= 1
     if info["sub"] in ACCOUNTS:
@@ -510,24 +553,56 @@ async def rewrite(r: Req, request: Request):
     return {
         "token": jwt.encode(info, SECRET, "HS256"),
         "model_used": used_model,
+        "model_flow": model_flow,
         **data,
     }
 
+
 # --- быстрая диагностика соединения с LLM (без WB) ---
 @app.get("/gentest")
-async def gentest(q: str = "Проверка генерации: сделай JSON {title, bullets[6], keywords[20]} для тестовой строки."):
+async def gentest(
+    q: str = "Проверка генерации: сделай JSON {title, bullets[6], keywords[20]} для тестовой строки.",
+    model: str | None = None,
+    json: int = 1,
+):
     try:
         comp = _openai_chat(
             messages=[
                 {"role": "system", "content": PROMPT},
                 {"role": "user", "content": q},
             ],
-            model=MODEL,
+            model=(model or MODEL),
             max_tokens=min(OPENAI_MAX_TOKENS, 500),
+            json_mode=bool(json),
         )
         raw = comp.choices[0].message.content or ""
         data = _extract_json(raw) or {}
-        return {"ok": True, "model": MODEL, "fallback": MODEL_FALLBACK, "data_ok": bool(data)}
+        return {
+            "ok": True,
+            "model": (model or MODEL),
+            "fallback": MODEL_FALLBACK,
+            "json_mode": bool(json),
+            "data_ok": bool(data),
+        }
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+@app.get("/models")
+async def models(prefix: str = "gpt"):
+    """
+    Вернуть список доступных моделей в аккаунте (именем). Можно фильтровать по префиксу.
+    """
+    try:
+        out = []
+        # openai>=1.45.0
+        for m in client.models.list():
+            name = getattr(m, "id", None) or getattr(m, "model", None) or ""
+            if not name:
+                continue
+            if not prefix or name.startswith(prefix):
+                out.append(name)
+        return {"ok": True, "count": len(out), "models": sorted(out)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
