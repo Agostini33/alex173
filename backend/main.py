@@ -30,10 +30,6 @@ if not OPENAI_KEY:
         "❌ OPENAI_API_KEY не установлен. Укажите его в Railway/GitHub Secrets."
     )
 client = openai.OpenAI(api_key=OPENAI_KEY)
-# Модель по умолчанию — GPT-5; можно переопределить через env OPENAI_MODEL
-MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
-# Опционально: усилие рассуждений (low|medium|high) — только если модель поддерживает
-REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT")  # например: "low"
 
 # ✅ Robokassa Pass1/Pass2 (используются для подписи форм и callback'ов)
 PASS1 = os.getenv("ROBOKASSA_PASS1")
@@ -109,25 +105,32 @@ PRICES = {"1": "1", "15": "199", "60": "499", "200": "999"}
 
 
 PROMPT = """
-Ты — опытный SEO-копирайтер Wildberries. На вход даётся сырой русский текст карточки товара.
+Ты — опытный SEO-копирайтер маркетплейса Wildberries.
+Тебе дают исходный текст карточки товара.
 
-ЗАДАЧА:
-1) title — продающий заголовок ≤ 100 символов.
-   Правила: главный ключ в начале; без точек/кавычек/% и слова «Wildberries»; без двойных пробелов.
-2) bullets — ровно 6 буллитов (каждый ≤ 120 символов).
-   Правила: каждый начинается с глагола («Осветляет…», «Защищает…»), без повторов слов между пунктами,
-            единый стиль (без точки в конце).
-3) keywords — ровно 20 ключевых фраз (логика Wordstat: от высокочастотных → к нишевым).
-   Запрещено: «купить», «скидка», «wildberries», «дёшево», бренды/артикулы. Фразы естественные, без кавычек.
+🔹 ЗАДАЧА  
+Сгенерируй:
+1) 🔑 Новый продающий заголовок ≤ 100 символов.  
+   • В начале главный ключ.  
+   • Без точек, кавычек, % и слова «Wildberries».  
+2) 🎯 6 буллитов ≤ 120 символов каждый — выгоды для покупателя, без канцелярита.  
+   • Используй глагол в начале («Ускоряет…», «Защищает…»).  
+   • Избегай повторов слов.  
+3) 🗝️ 20 ключевых фраз CSV, релевантных товару — ранжируй от самых частотных к нишевым.  
+   • Используй Яндекс.Wordstat логики: сначала высокочастотные, затем средне- и низкочастотные.  
+   • Исключи стоп-слова «купить», «скидка», «wildberries», «дёшево».
 
-ФОРМАТ ВЫВОДА — строго валидный JSON:
+🔹 ТОН  
+Разговорный, живой, без штампов «лучший», «идеальный». Русский язык.
+
+🔹 ФОРМАТ ВЫВОДА — строго валидный JSON, без комментариев:
 {
-  "title": "string (<=100)",
-  "bullets": ["string","string","string","string","string","string"],
-  "keywords": ["k1","k2",...,"k20"]
+ "title": "…",
+ "bullets": ["…","…","…","…","…","…"],
+ "keywords": ["k1","k2", … , "k20"]
 }
 
-НЕ ПИШИ ничего, кроме JSON.
+Валидация: не более 100 символов заголовок; ровно 6 буллитов; ровно 20 ключей.
 """
 
 app = FastAPI()
@@ -220,14 +223,10 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
     ]
 
     s = requests.Session()
-    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "\
-         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    s.headers.update({
-        "User-Agent": ua,
-        "Accept": "application/json",
-        "Accept-Language": "ru,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-    })
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " \
+        "AppleWebKit/537.36 (KHTML, like Gecko) " \
+        "Chrome/124.0.0.0 Safari/537.36"
+    s.headers.update({"User-Agent": ua, "Accept": "application/json"})
 
     name, desc_html = "", ""
     vol, part = nm_id // 100000, nm_id // 1000
@@ -240,8 +239,7 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
             break
         for i in range(1, 13):
             try:
-                url_try = host_tpl.format(i=i, vol=vol, part=part, nm=nm_id)
-                r = s.get(url_try, timeout=6)
+                r = s.get(host_tpl.format(i=i, vol=vol, part=part, nm=nm_id), timeout=6)
                 if "application/json" not in r.headers.get("Content-Type", ""):
                     continue
                 js = r.json()
@@ -251,7 +249,6 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
                         desc_html = js[f]
                         break
                 if desc_html:
-                    logging.debug("WB source hit: %s", r.url)
                     break
             except Exception:
                 continue
@@ -316,46 +313,23 @@ async def rewrite(r: Req, request: Request):
                 "hint": "Попробуйте позже или укажите WB_COOKIES/WB_UA.",
             }
         prompt = fetched
-    # --- Генерация строгого JSON с GPT-5 ---
-    def _generate(payload: str) -> dict:
-        kwargs = {
-            "model": MODEL,
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": PROMPT},
-                {"role": "user", "content": payload[:10000]},
-            ],
-        }
-        # Опциональный режим рассуждений (если задан)
-        if REASONING_EFFORT:
-            kwargs["reasoning"] = {"effort": REASONING_EFFORT}
-        comp = client.chat.completions.create(**kwargs)
-        return json.loads(comp.choices[0].message.content)
-
     try:
-        data = _generate(prompt)
-    except Exception:
-        # Одноразовый «ремонт» вывода
-        try:
-            data = _generate(PROMPT + "\n\n-----\n" + prompt[:10000])
-        except Exception as e2:
-            return {"error": f"GEN_FAIL: {e2}"}
-
-    # --- Мягкая валидация результата ---
-    title = (data.get("title") or "").strip()[:100]
-    bullets = list(map(lambda s: (s or "").strip()[:120], data.get("bullets") or []))[:6]
-    while len(bullets) < 6:
-        bullets.append("Уточняет преимущества товара")
-    keywords = list(map(lambda s: (s or "").strip().lower(), data.get("keywords") or []))[:20]
-    while len(keywords) < 20:
-        keywords.append("дополнительный запрос")
-    data = {"title": title, "bullets": bullets, "keywords": keywords}
-
+        comp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        )
+    except Exception as e:
+        return {"error": str(e)}
     info["quota"] -= 1
     if info["sub"] in ACCOUNTS:
         ACCOUNTS[info["sub"]]["quota"] = info["quota"]
-    return {"token": jwt.encode(info, SECRET, "HS256"), **data}
+    return {
+        "token": jwt.encode(info, SECRET, "HS256"),
+        **json.loads(comp.choices[0].message.content),
+    }
 
 
 # Robokassa ResultURL
