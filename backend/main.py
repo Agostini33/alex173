@@ -16,6 +16,13 @@ from bs4 import BeautifulSoup
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from urllib.parse import quote as _urlquote
+
+# --- базовое логирование настраиваемо через ENV ---
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(message)s",
+)
 
 # ============================
 # 🔐 Загрузка секретов из env
@@ -36,6 +43,7 @@ MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
 # Фолбэк-модель на случай недоступности основной
 MODEL_FALLBACK = os.getenv("OPENAI_MODEL_FALLBACK", "gpt-4o-mini")
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "30"))
+OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "600"))
 WB_UA = os.getenv("WB_UA", "Mozilla/5.0")
 
 # ✅ Robokassa Pass1/Pass2 (используются для подписи форм и callback'ов)
@@ -332,6 +340,19 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
 
     return (name + "\n\n" + text).strip()
 
+# --- утилита: безопасный парсинг JSON из ответа модели ---
+def _extract_json(s: str):
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    try:
+        m = re.search(r"\{.*\}", s, flags=re.S)
+        if m:
+            return json.loads(m.group(0))
+    except Exception:
+        return None
+
 
 # --- Диагностика источников WB (без влияния на основную логику) ---
 @app.get("/wbtest")
@@ -416,6 +437,8 @@ async def rewrite(r: Req, request: Request):
                 {"role": "system", "content": PROMPT},
                 {"role": "user", "content": prompt},
             ],
+            response_format={"type": "json_object"},
+            max_tokens=OPENAI_MAX_TOKENS,
         )
     except Exception as e1:
         logging.error("GEN primary (%s) failed: %s", MODEL, e1)
@@ -426,16 +449,45 @@ async def rewrite(r: Req, request: Request):
                     {"role": "system", "content": PROMPT},
                     {"role": "user", "content": prompt},
                 ],
+                response_format={"type": "json_object"},
+                max_tokens=OPENAI_MAX_TOKENS,
             )
         except Exception as e2:
             logging.error("GEN fallback (%s) failed: %s", MODEL_FALLBACK, e2)
             return {"error": f"GEN_FAIL: {type(e2).__name__}: {e2}"}
+
+    raw = comp.choices[0].message.content or ""
+    data = _extract_json(raw)
+    if not data:
+        # Попытка "чинящего" прохода на фолбэке: преврати текст в валидный JSON нужной формы
+        try:
+            repair = gen.create(
+                model=MODEL_FALLBACK,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Верни строго валидный JSON по схеме {title, bullets[6], keywords[20]} без комментариев и пояснений.",
+                    },
+                    {"role": "user", "content": raw[:8000]},
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=OPENAI_MAX_TOKENS,
+            )
+            data = _extract_json(repair.choices[0].message.content or "")
+        except Exception as e3:
+            logging.warning("Repair pass failed: %s", e3)
+
+    if not data or not isinstance(data, dict):
+        logging.error("Bad JSON from model. Raw: %s", raw[:500])
+        return {"error": "BAD_JSON", "raw": raw[:2000]}
+
     info["quota"] -= 1
     if info["sub"] in ACCOUNTS:
         ACCOUNTS[info["sub"]]["quota"] = info["quota"]
+
     return {
         "token": jwt.encode(info, SECRET, "HS256"),
-        **json.loads(comp.choices[0].message.content),
+        **data,
     }
 
 
