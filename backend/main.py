@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 
 import jwt
@@ -68,8 +69,28 @@ ACCOUNTS = {}
 LOGIN_INDEX = {}
 
 # ── persistent storage for tokens and invoice counter ──
-DB_PATH = os.getenv("TOKENS_DB", os.path.join(os.path.dirname(__file__), "tokens.db"))
-DB = sqlite3.connect(DB_PATH, check_same_thread=False)
+# По умолчанию используем постоянный том Railway, смонтированный в /data
+DATA_DIR = os.getenv("DATA_DIR", "/data").rstrip("/")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# Старый путь (рядом с кодом) — на случай миграции
+_LEGACY_DB = os.path.join(os.path.dirname(__file__), "tokens.db")
+
+# Новый путь (персистентный)
+DB_PATH = os.getenv("TOKENS_DB", os.path.join(DATA_DIR, "tokens.db"))
+
+# Если новый файл ещё не создан, а старый существует — перенесём, чтобы не потерять счётчик
+if not os.path.exists(DB_PATH) and os.path.exists(_LEGACY_DB):
+    try:
+        shutil.copy2(_LEGACY_DB, DB_PATH)
+    except Exception:
+        pass
+
+# Открываем SQLite с таймаутом и включаем WAL для устойчивости к конкуренции
+DB = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+DB.execute("PRAGMA journal_mode=WAL;")
+DB.execute("PRAGMA synchronous=NORMAL;")
+DB.execute("PRAGMA busy_timeout=5000;")  # мс
 DB.execute("CREATE TABLE IF NOT EXISTS tokens (inv TEXT PRIMARY KEY, token TEXT)")
 DB.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
 DB.commit()
@@ -93,16 +114,29 @@ def fetch_token(inv: str) -> str | None:
 
 
 def next_inv_id() -> int:
+    """
+    Атомарно увеличивает счётчик last_inv и возвращает новое значение.
+    Хранится в таблице meta (key='last_inv'), тип value — TEXT, но пишем числа.
+    Стартовое значение берётся из ENV INV_START (дефолт 3000).
+    """
+    INV_START = int(os.getenv("INV_START", "3000"))
     with DB:
+        # Инициализация (однократно): если ключа нет — создаём со стартом (INV_START-1), чтобы после инкремента получить INV_START
+        DB.execute(
+            "INSERT OR IGNORE INTO meta(key, value) VALUES('last_inv', ?)",
+            (str(INV_START - 1),),
+        )
+        # Атомарный инкремент
+        DB.execute(
+            "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key='last_inv'"
+        )
         cur = DB.execute("SELECT value FROM meta WHERE key='last_inv'")
         row = cur.fetchone()
-        last = int(row[0]) if row else 2999
-        nxt = last + 1
-        if nxt > 2147483647:
-            nxt = 3000
-        DB.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES('last_inv', ?)", (str(nxt),)
-        )
+        nxt = int(row[0]) if row else INV_START
+        # Ограничим верхнюю границу 32-битным int (Robokassa нормально живёт с бОльшими, но оставим поведение)
+        if nxt > 2_147_483_647:
+            nxt = INV_START
+            DB.execute("UPDATE meta SET value = ? WHERE key='last_inv'", (str(nxt),))
     return nxt
 
 
