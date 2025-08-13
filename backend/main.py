@@ -353,6 +353,29 @@ def _extract_json(s: str):
     except Exception:
         return None
 
+# --- утилита: безопасный вызов OpenAI ---
+def _openai_chat(messages, model, max_tokens=OPENAI_MAX_TOKENS):
+    """
+    Универсальный вызов chat.completions:
+     - если есть .with_options(timeout=...), используем его;
+     - иначе пробуем передать timeout прямо в .create();
+     - если и это не поддерживается (старый SDK) — вызываем без тайм-аута.
+    Всегда просим строгий JSON.
+    """
+    kwargs = dict(
+        model=model,
+        messages=messages,
+        response_format={"type": "json_object"},
+        max_tokens=max_tokens,
+    )
+    with_opts = getattr(client.chat.completions, "with_options", None)
+    if callable(with_opts):
+        return with_opts(timeout=OPENAI_TIMEOUT).create(**kwargs)
+    try:
+        return client.chat.completions.create(timeout=OPENAI_TIMEOUT, **kwargs)
+    except TypeError:
+        return client.chat.completions.create(**kwargs)
+
 
 # --- Диагностика источников WB (без влияния на основную логику) ---
 @app.get("/wbtest")
@@ -428,28 +451,24 @@ async def rewrite(r: Req, request: Request):
                 "hint": "Попробуйте позже или укажите WB_COOKIES/WB_UA.",
             }
         prompt = fetched
-    # Генерация с явным тайм-аутом и безопасным фолбэком
-    gen = client.chat.completions.with_options(timeout=OPENAI_TIMEOUT)
     try:
-        comp = gen.create(
-            model=MODEL,
+        comp = _openai_chat(
             messages=[
                 {"role": "system", "content": PROMPT},
                 {"role": "user", "content": prompt},
             ],
-            response_format={"type": "json_object"},
+            model=MODEL,
             max_tokens=OPENAI_MAX_TOKENS,
         )
     except Exception as e1:
         logging.error("GEN primary (%s) failed: %s", MODEL, e1)
         try:
-            comp = gen.create(
-                model=MODEL_FALLBACK,
+            comp = _openai_chat(
                 messages=[
                     {"role": "system", "content": PROMPT},
                     {"role": "user", "content": prompt},
                 ],
-                response_format={"type": "json_object"},
+                model=MODEL_FALLBACK,
                 max_tokens=OPENAI_MAX_TOKENS,
             )
         except Exception as e2:
@@ -459,10 +478,8 @@ async def rewrite(r: Req, request: Request):
     raw = comp.choices[0].message.content or ""
     data = _extract_json(raw)
     if not data:
-        # Попытка "чинящего" прохода на фолбэке: преврати текст в валидный JSON нужной формы
         try:
-            repair = gen.create(
-                model=MODEL_FALLBACK,
+            repair = _openai_chat(
                 messages=[
                     {
                         "role": "system",
@@ -470,7 +487,7 @@ async def rewrite(r: Req, request: Request):
                     },
                     {"role": "user", "content": raw[:8000]},
                 ],
-                response_format={"type": "json_object"},
+                model=MODEL_FALLBACK,
                 max_tokens=OPENAI_MAX_TOKENS,
             )
             data = _extract_json(repair.choices[0].message.content or "")
@@ -489,6 +506,24 @@ async def rewrite(r: Req, request: Request):
         "token": jwt.encode(info, SECRET, "HS256"),
         **data,
     }
+
+# --- быстрая диагностика соединения с LLM (без WB) ---
+@app.get("/gentest")
+async def gentest(q: str = "Проверка генерации: сделай JSON {title, bullets[6], keywords[20]} для тестовой строки."):
+    try:
+        comp = _openai_chat(
+            messages=[
+                {"role": "system", "content": PROMPT},
+                {"role": "user", "content": q},
+            ],
+            model=MODEL,
+            max_tokens=min(OPENAI_MAX_TOKENS, 500),
+        )
+        raw = comp.choices[0].message.content or ""
+        data = _extract_json(raw) or {}
+        return {"ok": True, "model": MODEL, "fallback": MODEL_FALLBACK, "data_ok": bool(data)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
 @app.get("/healthz")
