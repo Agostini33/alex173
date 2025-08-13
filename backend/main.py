@@ -34,6 +34,7 @@ client = openai.OpenAI(api_key=OPENAI_KEY)
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
 # Фолбэк-модель на случай недоступности основной
 MODEL_FALLBACK = os.getenv("OPENAI_MODEL_FALLBACK", "gpt-4o-mini")
+WB_UA = os.getenv("WB_UA", "Mozilla/5.0")
 
 # ✅ Robokassa Pass1/Pass2 (используются для подписи форм и callback'ов)
 PASS1 = os.getenv("ROBOKASSA_PASS1")
@@ -295,6 +296,58 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
         return (name + "\n\n" + (desc_html or "")).strip()
 
     return (name + "\n\n" + text).strip()
+
+
+# --- Диагностика источников WB (без влияния на основную логику) ---
+@app.get("/wbtest")
+async def wbtest(nm: int = 18488530):
+    nm_id = int(nm)
+    vol, part = nm_id // 100000, nm_id // 1000
+    s = requests.Session()
+    s.headers.update(
+        {
+            "User-Agent": WB_UA,
+            "Accept": "application/json",
+            "Accept-Language": "ru,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "close",
+        }
+    )
+
+    def try_url(u: str):
+        try:
+            r = s.get(u, timeout=8, allow_redirects=True)
+            ctype = r.headers.get("Content-Type", "")
+            ok_json = r.ok and ("application/json" in ctype)
+            length = int(r.headers.get("Content-Length") or 0) or len(r.content or b"")
+            return {
+                "url": u,
+                "status": r.status_code,
+                "ctype": ctype,
+                "ok_json": ok_json,
+                "len": length,
+            }
+        except Exception as e:
+            return {"url": u, "error": str(e)}
+
+    results = []
+    for host_tpl in (
+        "https://basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm}/info/ru/card.json",
+        "https://static-basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm}/info/ru/card.json",
+    ):
+        for i in range(1, 13):
+            u = host_tpl.format(i=i, vol=vol, part=part, nm=nm_id)
+            results.append(try_url(u))
+
+    card = f"https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm_id}"
+    results.append(try_url(card))
+
+    hits = [r for r in results if r.get("ok_json")]
+    return {
+        "nm": nm_id,
+        "hits": hits,
+        "results": results,
+    }
 
 
 # ── API ───────────────────────────────────────
