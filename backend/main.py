@@ -44,14 +44,12 @@ MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
 # Фолбэк-модель на случай недоступности основной
 MODEL_FALLBACK = os.getenv("OPENAI_MODEL_FALLBACK", "gpt-4o-mini")
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "30"))
-OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "600"))
-WB_FETCH_TIMEOUT = float(os.getenv("WB_FETCH_TIMEOUT", "4.0"))
-WB_FETCH_ATTEMPTS = int(os.getenv("WB_FETCH_ATTEMPTS", "1"))
-WB_FETCH_MAX_HOSTS = int(os.getenv("WB_FETCH_MAX_HOSTS", "6"))
-WB_FETCH_TOTAL_BUDGET = float(os.getenv("WB_FETCH_TOTAL_BUDGET", "12.0"))
+OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "800"))
 EXPOSE_MODEL_ERRORS = os.getenv("EXPOSE_MODEL_ERRORS", "0") == "1"
-OPENAI_JSON_MODE = os.getenv("OPENAI_JSON_MODE", "schema").lower()  # schema|object|off
-OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
+OPENAI_JSON_MODE = os.getenv("OPENAI_JSON_MODE", "object").lower()  # schema|object|off
+OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "1"))
+WB_DEBUG = os.getenv("WB_DEBUG", "0") == "1"
+WB_TIMEOUT = float(os.getenv("WB_TIMEOUT", "6.0"))
 WB_UA = os.getenv("WB_UA", "Mozilla/5.0")
 
 # ✅ Robokassa Pass1/Pass2 (используются для подписи форм и callback'ов)
@@ -254,10 +252,11 @@ def create_account(email: str, quota: int, inv: str):
 def wb_card_text(url: str, keep_html: bool = False) -> str:
     """
     Возвращает *имя + подробное описание* товара WB.
-    Источники по порядку:
-      1) basket-{01..12}.wb.ru
-      2) static-basket-{01..12}.wb.ru
-      3) card.wb.ru (строго по id/root == nmID и непустому description)
+    Источники:
+      1) basket-{01..12}.wb.ru (card.json) — проверяем nm_id
+      2) static-basket-{01..12}.wb.ru (card.json) — проверяем nm_id
+      3) card.wb.ru (id/root == nmID и непустой description)
+      4) HTML fallback: __NEXT_DATA__ → descriptionFull|description
     """
     m = re.search(r"/catalog/(\d+)/", url)
     if not m:
@@ -288,6 +287,9 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
 
     name, desc_html = "", ""
     vol, part = nm_id // 100000, nm_id // 1000
+    tried = []
+    used_source = ""
+    used_host = ""
 
     for host_tpl in (
         "https://basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm}/info/ru/card.json",
@@ -297,16 +299,27 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
             break
         for i in range(1, 13):
             try:
-                r = s.get(host_tpl.format(i=i, vol=vol, part=part, nm=nm_id), timeout=6)
-                if "application/json" not in r.headers.get("Content-Type", ""):
+                h = host_tpl.format(i=i, vol=vol, part=part, nm=nm_id)
+                tried.append(h)
+                r = s.get(h, timeout=WB_TIMEOUT)
+                ct = r.headers.get("Content-Type", "")
+                if "application/json" not in ct:
                     continue
                 js = r.json()
+                if (
+                    isinstance(js, dict)
+                    and js.get("nm_id")
+                    and int(js["nm_id"]) != nm_id
+                ):
+                    continue
                 name = _pick_name(js) or name
                 for f in JSON_FIELDS:
                     if js.get(f):
                         desc_html = js[f]
                         break
                 if desc_html:
+                    used_source = "basket" if "basket-" in h else "static-basket"
+                    used_host = h
                     break
             except Exception:
                 continue
@@ -315,7 +328,7 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
         try:
             r = s.get(
                 f"https://card.wb.ru/cards/detail?appType=1&curr=rub&nm={nm_id}",
-                timeout=6,
+                timeout=WB_TIMEOUT,
             )
             if "application/json" in r.headers.get("Content-Type", ""):
                 js = r.json()
@@ -332,6 +345,36 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
                 if prod:
                     name = _pick_name(prod) or name
                     desc_html = prod.get("description") or desc_html
+                    used_source, used_host = "card", "card.wb.ru"
+        except Exception:
+            pass
+
+    # HTML fallback
+    if not desc_html:
+        try:
+            s.headers.update({"Accept": "text/html"})
+            r = s.get(url, timeout=WB_TIMEOUT)
+            html_text = r.text
+            mjs = re.search(
+                r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html_text, re.S
+            )
+            if mjs:
+                data = json.loads(mjs.group(1))
+                prod = (
+                    data.get("props", {})
+                    .get("pageProps", {})
+                    .get("initialState", {})
+                    .get("products", {})
+                )
+                if isinstance(prod, dict):
+                    nm = prod.get("id") or prod.get("root") or nm_id
+                    if int(nm) == nm_id:
+                        name = prod.get("name") or name
+                        desc_html = (
+                            prod.get("descriptionFull") or prod.get("description") or ""
+                        )
+                        if desc_html:
+                            used_source, used_host = "html", "wildberries.ru"
         except Exception:
             pass
 
@@ -349,54 +392,58 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
     return (name + "\n\n" + text).strip()
 
 
-# --- утилита: безопасный парсинг JSON из ответа модели ---
+# ============================
+# 🔎 Вспомогательные утилиты
+# ============================
+_JSON_OBJ = re.compile(r"\{.*\}", re.S)
+
+
 def _extract_json(s: str):
+    if not isinstance(s, str) or "{" not in s:
+        return None
+    m = _JSON_OBJ.search(s)
+    if not m:
+        return None
     try:
-        return json.loads(s)
+        return json.loads(m.group(0))
     except Exception:
-        pass
-    # 1) Попробовать вытащить из ```json ... ```
-    try:
-        m = re.search(r"```(?:json)?\s*({[\s\S]*?})\s*```", s, flags=re.I)
-        if m:
-            d = json.loads(m.group(1))
-            if _schema_ok(d):
-                return d
-            return d
-    except Exception:
-        pass
-    # 2) Сбалансированный поиск первого JSON-объекта
-    try:
-        start = s.find("{")
-        if start != -1:
-            depth = 0
-            for i, ch in enumerate(s[start:], start=start):
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        d = json.loads(s[start : i + 1])
-                        if _schema_ok(d):
-                            return d
-                        return d
-    except Exception:
-        pass
-    return None
+        return None
 
 
 def _schema_ok(d):
     if not isinstance(d, dict):
         return False
-    b = d.get("bullets")
-    k = d.get("keywords")
-    if not isinstance(b, list) or not isinstance(k, list):
+    if not all(k in d for k in ("title", "bullets", "keywords")):
         return False
-    if len(b) != 6 or len(k) != 20:
+    if not isinstance(d.get("bullets"), list) or len(d["bullets"]) != 6:
         return False
-    if not isinstance(d.get("title"), str):
+    if not isinstance(d.get("keywords"), list) or len(d["keywords"]) != 20:
         return False
     return True
+
+
+def _find_schema_dict(obj, _depth=0):
+    """Рекурсивно находит первый dict по нашей схеме во вложенных структурах."""
+    if _depth > 6:
+        return None
+    try:
+        if hasattr(obj, "model_dump"):
+            obj = obj.model_dump()
+    except Exception:
+        pass
+    if isinstance(obj, dict):
+        if _schema_ok(obj):
+            return obj
+        for v in obj.values():
+            x = _find_schema_dict(v, _depth + 1)
+            if x:
+                return x
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            x = _find_schema_dict(v, _depth + 1)
+            if x:
+                return x
+    return None
 
 
 def _uses_max_completion_tokens(model_name: str) -> bool:
@@ -471,9 +518,9 @@ def _json_response_format(model: str, want: str = OPENAI_JSON_MODE):
 def _msg_to_data_and_raw(msg):
     """
     Возвращает (data_dict_or_None, raw_text).
-    Предпочитает структурированный ответ (message.parsed), иначе берёт message.content.
+    Предпочитает структурированный ответ (message.parsed), затем content parts, затем глубокий поиск JSON.
     """
-    # 1) structured output через parsed
+    # 1) structured output (parsed)
     parsed = getattr(msg, "parsed", None)
     if parsed is not None:
         try:
@@ -484,13 +531,16 @@ def _msg_to_data_and_raw(msg):
             elif isinstance(parsed, dict):
                 d = parsed
             else:
-                # попытка привести к dict через JSON
                 d = json.loads(getattr(parsed, "json", lambda: str(parsed))())
         except Exception:
             d = None
-        raw = json.dumps(d, ensure_ascii=False) if isinstance(d, dict) else ""
-        return d, raw
-    # 2) контент как строка ИЛИ список частей (новый SDK)
+        if isinstance(d, dict) and _schema_ok(d):
+            return d, json.dumps(d, ensure_ascii=False)
+        found = _find_schema_dict(parsed)
+        if found:
+            return found, json.dumps(found, ensure_ascii=False)
+
+    # 2) content как строка или список частей
     content = getattr(msg, "content", None)
     raw = ""
     if isinstance(content, str):
@@ -498,7 +548,6 @@ def _msg_to_data_and_raw(msg):
     elif isinstance(content, list):
         chunks = []
         for part in content:
-            # pydantic-объекты или dict
             try:
                 if hasattr(part, "model_dump"):
                     part = part.model_dump()
@@ -506,7 +555,7 @@ def _msg_to_data_and_raw(msg):
                 pass
             if isinstance(part, dict):
                 ptype = part.get("type")
-                if ptype in ("text", "output_text"):
+                if ptype in ("text", "output_text", "reasoning"):
                     t = part.get("text")
                     if isinstance(t, str) and t.strip():
                         chunks.append(t)
@@ -518,10 +567,14 @@ def _msg_to_data_and_raw(msg):
                 chunks.append(part)
         raw = "\n".join(chunks).strip()
     else:
-        # Пытаемся привести к строке (на всякий случай)
         raw = (str(content) if content is not None else "") or ""
 
     d = _extract_json(raw) or None
+    if _schema_ok(d or {}):
+        return d, raw
+    found = _find_schema_dict(msg)
+    if found:
+        return found, json.dumps(found, ensure_ascii=False)
     return d, raw
 
 
@@ -676,19 +729,22 @@ async def rewrite(r: Req, request: Request):
     if info["quota"] <= 0:
         return {"error": "NO_CREDITS"}
     prompt = r.prompt.strip()
+    wb_meta = None
     if prompt.startswith("http") and "wildberries.ru" in prompt:
         fetched = wb_card_text(prompt)
         if fetched == prompt or len(fetched) < 60:
-            return {
+            resp = {
                 "error": "WB_FETCH_FAILED",
                 "hint": "Попробуйте позже или укажите WB_COOKIES/WB_UA.",
             }
+            if WB_DEBUG:
+                resp["wb_meta"] = {"url": prompt}
+            return resp
         prompt = fetched
-    model_flow = []
-    gen_t0 = time.monotonic()
-    repair_attempted = False
-    repair_used = False
+        if WB_DEBUG:
+            wb_meta = {"url": r.prompt, "fetched_len": len(fetched)}
     try:
+        t0 = time.monotonic()
         comp = _openai_chat(
             messages=[
                 {"role": "system", "content": PROMPT},
@@ -698,91 +754,62 @@ async def rewrite(r: Req, request: Request):
             max_tokens=OPENAI_MAX_TOKENS,
             json_mode=True,
         )
-        model_flow.append({"model": MODEL, "mode": "json"})
-    except Exception as e1:
-        logging.error("GEN primary (%s) failed: %s", MODEL, e1)
-        if _is_json_mode_unsupported(e1):
+    except Exception as e:
+        return {"error": str(e)}
+    used_model = getattr(comp, "model", MODEL)
+    model_flow = [{"model": used_model, "mode": "json"}]
+    msg = comp.choices[0].message
+    data, raw = _msg_to_data_and_raw(msg)
+    gen_ms = int((time.monotonic() - t0) * 1000)
+
+    repair_attempted = False
+    repair_used = False
+    repair_ms = 0
+    if not data:
+        # "Чинящий" проход на фолбэке — только если есть, что чинить
+        repair_attempted = True
+        repair_input = (raw or prompt or "").strip()
+        if len(repair_input) >= 30:
+            rt0 = time.monotonic()
             try:
-                comp = _openai_chat(
+                repair = _openai_chat(
                     messages=[
-                        {"role": "system", "content": PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
-                    model=MODEL,
-                    max_tokens=OPENAI_MAX_TOKENS,
-                    json_mode=False,
-                )
-                model_flow.append({"model": MODEL, "mode": "nojson"})
-            except Exception as e1b:
-                logging.error("GEN primary-nojson (%s) failed: %s", MODEL, e1b)
-                e1 = e1b
-        if not model_flow:
-            pass
-        try:
-            if not model_flow or comp is None:
-                comp = _openai_chat(
-                    messages=[
-                        {"role": "system", "content": PROMPT},
-                        {"role": "user", "content": prompt},
+                        {
+                            "role": "system",
+                            "content": "Верни строго валидный JSON по схеме {title, bullets[6], keywords[20]} без комментариев и пояснений.",
+                        },
+                        {"role": "user", "content": repair_input[:8000]},
                     ],
                     model=MODEL_FALLBACK,
                     max_tokens=OPENAI_MAX_TOKENS,
                     json_mode=True,
                 )
-                model_flow.append({"model": MODEL_FALLBACK, "mode": "json"})
-        except Exception as e2:
-            logging.error("GEN fallback (%s) failed: %s", MODEL_FALLBACK, e2)
+                d2, _raw2 = _msg_to_data_and_raw(repair.choices[0].message)
+                if d2:
+                    data = d2
+                    used_model = getattr(repair, "model", used_model)
+                    model_flow.append({"model": used_model, "mode": "repair"})
+                    repair_used = True
+            except Exception as e3:
+                logging.warning("Repair pass failed: %s", e3)
+            repair_ms = int((time.monotonic() - rt0) * 1000)
+        else:
             resp = {
-                "error": f"GEN_FAIL: {type(e2).__name__}: {e2}",
-                "model_tried": [MODEL, MODEL_FALLBACK],
+                "error": "BAD_JSON_EMPTY",
                 "model_flow": model_flow,
+                "timings": {"gen_ms": gen_ms, "repair_ms": 0},
             }
+            if wb_meta and WB_DEBUG:
+                resp["wb_meta"] = wb_meta
             if EXPOSE_MODEL_ERRORS:
-                resp["model_error"] = {"primary": str(e1), "fallback": str(e2)}
+                resp["model_used"] = used_model
             return resp
-    used_model = getattr(comp, "model", MODEL)
-    gen_ms = int((time.monotonic() - gen_t0) * 1000)
-    msg = comp.choices[0].message
-    if EXPOSE_MODEL_ERRORS:
-        try:
-            logging.debug("DBG message shape: %s", _shape_digest(msg))
-        except Exception:
-            pass
-    data, raw = _msg_to_data_and_raw(msg)
-    if not data:
-        repair_attempted = True
-        repair_t0 = time.monotonic()
-        try:
-            repair = _openai_chat(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Верни строго валидный JSON по схеме {title, bullets[6], keywords[20]} без комментариев и пояснений.",
-                    },
-                    {"role": "user", "content": (raw or "")[:8000]},
-                ],
-                model=MODEL_FALLBACK,
-                max_tokens=OPENAI_MAX_TOKENS,
-                json_mode=True,
-            )
-            d2, raw2 = _msg_to_data_and_raw(repair.choices[0].message)
-            data = d2 or {}
-            # если чинящий проход дал валидный JSON — считаем, что «сработала» repair-модель
-            if data:
-                used_model = getattr(repair, "model", used_model)
-                model_flow.append({"model": used_model, "mode": "repair"})
-                repair_used = True
-        except Exception as e3:
-            logging.warning("Repair pass failed: %s", e3)
-        repair_ms = int((time.monotonic() - repair_t0) * 1000)
-    else:
-        repair_ms = 0
 
-    if not data or not isinstance(data, dict):
-        logging.error("Bad JSON from model. Raw: %s", raw[:500])
+    # Валидация и финальный ответ
+    if not data or not _schema_ok(data):
         resp = {
             "error": "BAD_JSON",
-            "raw": raw[:2000],
+            "raw": (raw or "")[:2000],
             "model_flow": model_flow,
             "timings": {"gen_ms": gen_ms, "repair_ms": repair_ms},
             "repair_attempted": repair_attempted,
@@ -790,12 +817,13 @@ async def rewrite(r: Req, request: Request):
         }
         if EXPOSE_MODEL_ERRORS:
             resp["model_used"] = used_model
+        if wb_meta and WB_DEBUG:
+            resp["wb_meta"] = wb_meta
         return resp
 
     info["quota"] -= 1
     if info["sub"] in ACCOUNTS:
         ACCOUNTS[info["sub"]]["quota"] = info["quota"]
-
     return {
         "token": jwt.encode(info, SECRET, "HS256"),
         "model_used": used_model,
@@ -803,6 +831,7 @@ async def rewrite(r: Req, request: Request):
         "timings": {"gen_ms": gen_ms, "repair_ms": repair_ms},
         "repair_attempted": repair_attempted,
         "repair_used": repair_used,
+        **({"wb_meta": wb_meta} if (wb_meta and WB_DEBUG) else {}),
         **data,
     }
 
@@ -814,35 +843,55 @@ async def gentest(
     model: str | None = None,
     json: int = 1,
     raw: int = 0,
+    diag: int = 0,
 ):
+    t0 = time.monotonic()
+    m = model or MODEL
     try:
-        t0 = time.monotonic()
         comp = _openai_chat(
             messages=[
                 {"role": "system", "content": PROMPT},
                 {"role": "user", "content": q},
             ],
-            model=(model or MODEL),
-            max_tokens=min(OPENAI_MAX_TOKENS, 500),
+            model=m,
+            max_tokens=OPENAI_MAX_TOKENS,
             json_mode=bool(json),
         )
-        data, raw_text = _msg_to_data_and_raw(comp.choices[0].message)
-        data = data or {}
-        gen_ms = int((time.monotonic() - t0) * 1000)
-        resp = {
-            "ok": True,
-            "model": (model or MODEL),
-            "fallback": MODEL_FALLBACK,
-            "json_mode": bool(json),
-            "response_format": (OPENAI_JSON_MODE if bool(json) else "off"),
-            "data_ok": bool(data),
-            "timings": {"gen_ms": gen_ms},
-        }
-        if raw:
-            resp["raw"] = (raw_text or "")[:2000]
-        return resp
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    msg = comp.choices[0].message
+    data, raw_text = _msg_to_data_and_raw(msg)
+    gen_ms = int((time.monotonic() - t0) * 1000)
+    resp = {
+        "ok": True,
+        "model": m,
+        "fallback": MODEL_FALLBACK,
+        "json_mode": bool(json),
+        "response_format": (OPENAI_JSON_MODE if bool(json) else "off"),
+        "data_ok": bool(data),
+        "timings": {"gen_ms": gen_ms},
+    }
+    if raw:
+        resp["raw"] = (raw_text or "")[:2000]
+    if diag:
+        try:
+
+            def _shape(x):
+                try:
+                    if hasattr(x, "model_dump"):
+                        x = x.model_dump()
+                    return json.dumps(x, ensure_ascii=False)[:800]
+                except Exception:
+                    s = str(x)
+                    return s[:800] + ("…" if len(s) > 800 else "")
+
+            resp["shape"] = {
+                "content_type": type(getattr(msg, "content", None)).__name__,
+                "message": _shape(msg),
+            }
+        except Exception:
+            pass
+    return resp
 
 
 @app.get("/models")
