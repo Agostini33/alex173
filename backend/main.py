@@ -490,10 +490,53 @@ def _msg_to_data_and_raw(msg):
             d = None
         raw = json.dumps(d, ensure_ascii=False) if isinstance(d, dict) else ""
         return d, raw
-    # 2) классический текстовый ответ
-    raw = getattr(msg, "content", "") or ""
+    # 2) контент как строка ИЛИ список частей (новый SDK)
+    content = getattr(msg, "content", None)
+    raw = ""
+    if isinstance(content, str):
+        raw = content
+    elif isinstance(content, list):
+        chunks = []
+        for part in content:
+            # pydantic-объекты или dict
+            try:
+                if hasattr(part, "model_dump"):
+                    part = part.model_dump()
+            except Exception:
+                pass
+            if isinstance(part, dict):
+                ptype = part.get("type")
+                if ptype in ("text", "output_text"):
+                    t = part.get("text")
+                    if isinstance(t, str) and t.strip():
+                        chunks.append(t)
+                elif ptype == "output_json":
+                    js = part.get("json")
+                    if isinstance(js, (dict, list)):
+                        chunks.append(json.dumps(js, ensure_ascii=False))
+            elif isinstance(part, str):
+                chunks.append(part)
+        raw = "\n".join(chunks).strip()
+    else:
+        # Пытаемся привести к строке (на всякий случай)
+        raw = (str(content) if content is not None else "") or ""
+
     d = _extract_json(raw) or None
     return d, raw
+
+
+def _shape_digest(obj, maxlen: int = 200):
+    """
+    Короткий дайджест структуры для логов (когда включён EXPOSE_MODEL_ERRORS).
+    """
+    try:
+        if hasattr(obj, "model_dump"):
+            obj = obj.model_dump()
+        s = json.dumps(obj, ensure_ascii=False)[:maxlen]
+        return s
+    except Exception:
+        s = str(obj)
+        return s[:maxlen] + ("…" if len(s) > maxlen else "")
 
 
 def _is_json_mode_unsupported(err: Exception) -> bool:
@@ -700,6 +743,11 @@ async def rewrite(r: Req, request: Request):
     used_model = getattr(comp, "model", MODEL)
     gen_ms = int((time.monotonic() - gen_t0) * 1000)
     msg = comp.choices[0].message
+    if EXPOSE_MODEL_ERRORS:
+        try:
+            logging.debug("DBG message shape: %s", _shape_digest(msg))
+        except Exception:
+            pass
     data, raw = _msg_to_data_and_raw(msg)
     if not data:
         repair_attempted = True
