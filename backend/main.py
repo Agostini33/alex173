@@ -8,6 +8,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import time
 from urllib.parse import quote as _urlquote
 
 import jwt
@@ -412,6 +413,21 @@ def _uses_max_completion_tokens(model_name: str) -> bool:
     )
 
 
+def _omit_temperature(model_name: str) -> bool:
+    """
+    Для reasoning-поколения (gpt-5/4.1/o*) Chat Completions не принимает произвольную temperature.
+    Оставляем дефолт (1) — т.е. НЕ передаём параметр.
+    """
+    m = (model_name or "").lower()
+    return (
+        m.startswith("gpt-5")
+        or m.startswith("gpt-4.1")
+        or m.startswith("o1")
+        or m.startswith("o3")
+        or m.startswith("o4")
+    )
+
+
 def _json_response_format(model: str, want: str = OPENAI_JSON_MODE):
     """
     Вернёт dict для response_format или None.
@@ -471,8 +487,9 @@ def _openai_chat(messages, model, max_tokens=OPENAI_MAX_TOKENS, json_mode: bool 
         model=model,
         messages=messages,
     )
-    # Температура
-    kwargs["temperature"] = OPENAI_TEMPERATURE
+    # Температура: для reasoning-моделей НЕ передаём параметр (используется дефолт=1)
+    if not _omit_temperature(model):
+        kwargs["temperature"] = OPENAI_TEMPERATURE
     # Поддержка JSON-mode (схема/объект/выключено)
     rf = _json_response_format(model, OPENAI_JSON_MODE) if json_mode else None
     if rf:
@@ -588,6 +605,9 @@ async def rewrite(r: Req, request: Request):
             }
         prompt = fetched
     model_flow = []
+    gen_t0 = time.monotonic()
+    repair_attempted = False
+    repair_used = False
     try:
         comp = _openai_chat(
             messages=[
@@ -641,9 +661,12 @@ async def rewrite(r: Req, request: Request):
                 resp["model_error"] = {"primary": str(e1), "fallback": str(e2)}
             return resp
     used_model = getattr(comp, "model", MODEL)
+    gen_ms = int((time.monotonic() - gen_t0) * 1000)
     raw = comp.choices[0].message.content or ""
     data = _extract_json(raw)
     if not data:
+        repair_attempted = True
+        repair_t0 = time.monotonic()
         try:
             repair = _openai_chat(
                 messages=[
@@ -658,15 +681,27 @@ async def rewrite(r: Req, request: Request):
                 json_mode=True,
             )
             data = _extract_json(repair.choices[0].message.content or "")
+            # если чинящий проход дал валидный JSON — считаем, что «сработала» repair-модель
             if data:
                 used_model = getattr(repair, "model", used_model)
                 model_flow.append({"model": used_model, "mode": "repair"})
+                repair_used = True
         except Exception as e3:
             logging.warning("Repair pass failed: %s", e3)
+        repair_ms = int((time.monotonic() - repair_t0) * 1000)
+    else:
+        repair_ms = 0
 
     if not data or not isinstance(data, dict):
         logging.error("Bad JSON from model. Raw: %s", raw[:500])
-        resp = {"error": "BAD_JSON", "raw": raw[:2000], "model_flow": model_flow}
+        resp = {
+            "error": "BAD_JSON",
+            "raw": raw[:2000],
+            "model_flow": model_flow,
+            "timings": {"gen_ms": gen_ms, "repair_ms": repair_ms},
+            "repair_attempted": repair_attempted,
+            "repair_used": repair_used,
+        }
         if EXPOSE_MODEL_ERRORS:
             resp["model_used"] = used_model
         return resp
@@ -679,6 +714,9 @@ async def rewrite(r: Req, request: Request):
         "token": jwt.encode(info, SECRET, "HS256"),
         "model_used": used_model,
         "model_flow": model_flow,
+        "timings": {"gen_ms": gen_ms, "repair_ms": repair_ms},
+        "repair_attempted": repair_attempted,
+        "repair_used": repair_used,
         **data,
     }
 
@@ -692,6 +730,7 @@ async def gentest(
     raw: int = 0,
 ):
     try:
+        t0 = time.monotonic()
         comp = _openai_chat(
             messages=[
                 {"role": "system", "content": PROMPT},
@@ -703,6 +742,7 @@ async def gentest(
         )
         raw_text = comp.choices[0].message.content or ""
         data = _extract_json(raw_text) or {}
+        gen_ms = int((time.monotonic() - t0) * 1000)
         resp = {
             "ok": True,
             "model": (model or MODEL),
@@ -710,6 +750,7 @@ async def gentest(
             "json_mode": bool(json),
             "response_format": (OPENAI_JSON_MODE if bool(json) else "off"),
             "data_ok": bool(data),
+            "timings": {"gen_ms": gen_ms},
         }
         if raw:
             resp["raw"] = raw_text[:2000]
