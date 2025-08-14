@@ -376,7 +376,7 @@ def _extract_json(s: str):
                 elif ch == "}":
                     depth -= 1
                     if depth == 0:
-                        d = json.loads(s[start:i+1])
+                        d = json.loads(s[start : i + 1])
                         if _schema_ok(d):
                             return d
                         return d
@@ -388,7 +388,8 @@ def _extract_json(s: str):
 def _schema_ok(d):
     if not isinstance(d, dict):
         return False
-    b = d.get("bullets"); k = d.get("keywords")
+    b = d.get("bullets")
+    k = d.get("keywords")
     if not isinstance(b, list) or not isinstance(k, list):
         return False
     if len(b) != 6 or len(k) != 20:
@@ -467,6 +468,34 @@ def _json_response_format(model: str, want: str = OPENAI_JSON_MODE):
     return {"type": "json_object"}
 
 
+def _msg_to_data_and_raw(msg):
+    """
+    Возвращает (data_dict_or_None, raw_text).
+    Предпочитает структурированный ответ (message.parsed), иначе берёт message.content.
+    """
+    # 1) structured output через parsed
+    parsed = getattr(msg, "parsed", None)
+    if parsed is not None:
+        try:
+            if hasattr(parsed, "model_dump"):
+                d = parsed.model_dump()
+            elif hasattr(parsed, "dict"):
+                d = parsed.dict()
+            elif isinstance(parsed, dict):
+                d = parsed
+            else:
+                # попытка привести к dict через JSON
+                d = json.loads(getattr(parsed, "json", lambda: str(parsed))())
+        except Exception:
+            d = None
+        raw = json.dumps(d, ensure_ascii=False) if isinstance(d, dict) else ""
+        return d, raw
+    # 2) классический текстовый ответ
+    raw = getattr(msg, "content", "") or ""
+    d = _extract_json(raw) or None
+    return d, raw
+
+
 def _is_json_mode_unsupported(err: Exception) -> bool:
     """Грубая эвристика: модель не поддерживает response_format/json_object."""
     t = str(err).lower()
@@ -499,6 +528,14 @@ def _openai_chat(messages, model, max_tokens=OPENAI_MAX_TOKENS, json_mode: bool 
         kwargs["max_completion_tokens"] = max_tokens
     else:
         kwargs["max_tokens"] = max_tokens
+    # Если просим строгую схему — сначала попробуем parse()
+    if rf and rf.get("type") == "json_schema":
+        try:
+            # parse() обычно не принимает timeout напрямую; пробуем без with_options
+            return client.chat.completions.parse(**kwargs)
+        except Exception:
+            # продолжим обычным путём ниже
+            pass
 
     with_opts = getattr(client.chat.completions, "with_options", None)
     if callable(with_opts):
@@ -662,8 +699,8 @@ async def rewrite(r: Req, request: Request):
             return resp
     used_model = getattr(comp, "model", MODEL)
     gen_ms = int((time.monotonic() - gen_t0) * 1000)
-    raw = comp.choices[0].message.content or ""
-    data = _extract_json(raw)
+    msg = comp.choices[0].message
+    data, raw = _msg_to_data_and_raw(msg)
     if not data:
         repair_attempted = True
         repair_t0 = time.monotonic()
@@ -674,13 +711,14 @@ async def rewrite(r: Req, request: Request):
                         "role": "system",
                         "content": "Верни строго валидный JSON по схеме {title, bullets[6], keywords[20]} без комментариев и пояснений.",
                     },
-                    {"role": "user", "content": raw[:8000]},
+                    {"role": "user", "content": (raw or "")[:8000]},
                 ],
                 model=MODEL_FALLBACK,
                 max_tokens=OPENAI_MAX_TOKENS,
                 json_mode=True,
             )
-            data = _extract_json(repair.choices[0].message.content or "")
+            d2, raw2 = _msg_to_data_and_raw(repair.choices[0].message)
+            data = d2 or {}
             # если чинящий проход дал валидный JSON — считаем, что «сработала» repair-модель
             if data:
                 used_model = getattr(repair, "model", used_model)
@@ -740,8 +778,8 @@ async def gentest(
             max_tokens=min(OPENAI_MAX_TOKENS, 500),
             json_mode=bool(json),
         )
-        raw_text = comp.choices[0].message.content or ""
-        data = _extract_json(raw_text) or {}
+        data, raw_text = _msg_to_data_and_raw(comp.choices[0].message)
+        data = data or {}
         gen_ms = int((time.monotonic() - t0) * 1000)
         resp = {
             "ok": True,
@@ -753,7 +791,7 @@ async def gentest(
             "timings": {"gen_ms": gen_ms},
         }
         if raw:
-            resp["raw"] = raw_text[:2000]
+            resp["raw"] = (raw_text or "")[:2000]
         return resp
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
