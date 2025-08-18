@@ -53,6 +53,9 @@ MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
 MODEL_FALLBACK = os.getenv("OPENAI_MODEL_FALLBACK", "gpt-4o-mini")
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "30"))
 OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "800"))
+DESC_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT_DESC", "18"))  # сек
+DESC_MAX_OUTPUT = int(os.getenv("OPENAI_DESC_MAX_OUTPUT", "700"))  # токены/символы
+DESC_FALLBACKS = os.getenv("OPENAI_DESC_FALLBACK_MODELS", "gpt-4o,gpt-4o-mini").split(",")
 EXPOSE_MODEL_ERRORS = os.getenv("EXPOSE_MODEL_ERRORS", "0") == "1"
 OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "1"))
 WB_DEBUG = os.getenv("WB_DEBUG", "0") == "1"
@@ -764,6 +767,98 @@ def _msg_from_response(resp):
     return _M(raw or "")
 
 
+def _extract_text_from_responses(res) -> str:
+    """
+    Универсально достаёт plain-текст из OpenAI Responses API (gpt-5).
+    """
+    try:
+        # SDK v1: у объектов Responses есть удобный output_text
+        t = getattr(res, "output_text", None)
+        if isinstance(t, str) and t.strip():
+            return t.strip()
+    except Exception:
+        pass
+    # Фолбэк: попытка пройти по полям
+    for name in ("output", "data", "choices"):
+        seq = getattr(res, name, None)
+        if isinstance(seq, (list, tuple)) and seq:
+            for item in seq:
+                for key in ("content", "text", "output_text"):
+                    v = getattr(item, key, None) or (
+                        isinstance(item, dict) and item.get(key)
+                    )
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+    # Ничего не вышло
+    return ""
+
+
+def generate_description_text(
+    client,
+    model: str,
+    system: str,
+    user: str,
+    timeout_s: int,
+    max_out_hint: int,
+    fallbacks: list[str],
+):
+    """
+    Пытается сгенерировать связный текст описания через gpt-5 (Responses),
+    затем падает на chat-модели по цепочке.
+    Возвращает (text, diag_dict).
+    """
+
+    diag = {"desc_model_flow": [], "desc_error": None, "desc_timing_ms": 0}
+    import time
+
+    t0 = time.time()
+
+    def _ok(text: str, used_model: str):
+        diag["desc_timing_ms"] = int((time.time() - t0) * 1000)
+        diag["desc_model_flow"].append({"model": used_model})
+        return text, diag
+
+    # 3.1) Попытка через gpt-5 Responses (если выбранная модель начинается с gpt-5)
+    try:
+        if model.startswith("gpt-5"):
+            diag["desc_model_flow"].append({"model": model})
+            res = client.responses.create(
+                model=model,
+                input=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                timeout=timeout_s,
+            )
+            text = _extract_text_from_responses(res)
+            if text:
+                return _ok(text, model)
+    except Exception as e:
+        diag["desc_error"] = f"gpt-5 error: {e}"
+
+    # 3.2) Фолбэки на chat-модели
+    for fb in fallbacks or []:
+        try:
+            diag["desc_model_flow"].append({"model": fb})
+            cc = client.chat.completions.create(
+                model=fb.strip(),
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                # без temperature — на некоторых моделях ограничение; или успользуй env OPENAI_TEMPERATURE, если уже есть
+                timeout=timeout_s,
+            )
+            text = (cc.choices[0].message.content or "").strip()
+            if text:
+                return _ok(text, fb.strip())
+        except Exception as e:
+            diag["desc_error"] = f"{fb.strip()} error: {e}"
+
+    diag["desc_timing_ms"] = int((time.time() - t0) * 1000)
+    return "", diag
+
+
 # --- Диагностика источников WB (без влияния на основную логику) ---
 @app.get("/wbtest")
 async def wbtest(nm: int = 18488530):
@@ -1006,6 +1101,8 @@ async def rewrite(r: Req, request: Request):
     if info["sub"] in ACCOUNTS:
         ACCOUNTS[info["sub"]]["quota"] = info["quota"]
     out = dict(data)
+    desc_diag = None
+    desc_text = ""
     if r.rewriteDescription:
         source_text = prompt
         instr = _desc_instructions(r.stylePrimary, r.styleSecondary, r.styleCustom)
@@ -1013,40 +1110,19 @@ async def rewrite(r: Req, request: Request):
             "Ты редактор маркетплейса. Перепиши связное ОПИСАНИЕ товара по инструкциям. Верни ТОЛЬКО текст описания, без пояснений."
         )
         user = f"Инструкции: {instr}\n\nИсходный текст карточки:\n{source_text}"
-        model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        description_text = None
-        try:
-            if model.startswith("gpt-5"):
-                res = client.responses.create(
-                    model=model,
-                    input=[
-                        {"role": "system", "content": sys},
-                        {"role": "user", "content": user},
-                    ],
-                )
-                try:
-                    description_text = (getattr(res, "output_text", "") or "").strip()
-                except Exception:
-                    for item in getattr(res, "output", []) or []:
-                        t = getattr(item, "content", None)
-                        if isinstance(t, str) and t.strip():
-                            description_text = t.strip()
-                            break
-            else:
-                cc = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": sys},
-                        {"role": "user", "content": user},
-                    ],
-                    temperature=0.2,
-                )
-                description_text = (cc.choices[0].message.content or "").strip()
-        except Exception:
-            description_text = None
-        if description_text:
-            out["description"] = description_text
-    return {
+        desc_text, desc_diag = generate_description_text(
+            client,
+            MODEL,
+            sys,
+            user,
+            DESC_TIMEOUT,
+            DESC_MAX_OUTPUT,
+            DESC_FALLBACKS,
+        )
+        if desc_text:
+            out["description"] = desc_text
+
+    resp = {
         "token": jwt.encode(info, SECRET, "HS256"),
         "model_used": used_model,
         "model_flow": model_flow,
@@ -1056,6 +1132,16 @@ async def rewrite(r: Req, request: Request):
         **({"wb_meta": wb_meta} if (wb_meta and WB_DEBUG) else {}),
         **out,
     }
+    if r.rewriteDescription and desc_diag is not None:
+        resp["desc_diag"] = desc_diag
+        if desc_text:
+            try:
+                resp["desc_model_used"] = desc_diag["desc_model_flow"][-1]["model"]
+            except Exception:
+                pass
+        else:
+            resp["desc_error"] = desc_diag.get("desc_error")
+    return resp
 
 
 # --- быстрая диагностика соединения с LLM (без WB) ---
