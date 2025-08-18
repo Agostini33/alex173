@@ -61,25 +61,23 @@ footer .contacts{margin-top:12px;font-size:14px;color:#333}
     <label><input type="checkbox" id="descRewrite"> переписать так же описание</label>
     <div class="desc-row">
       <select id="descPrimary" disabled>
-        <option value="">— Базовый режим/тон —</option>
+        <option value="">— Базовый стиль —</option>
         <option>Только SEO</option>
         <option>Расширить</option>
         <option>Сократить</option>
         <option>Казуально, как для друга</option>
         <option>Деловой стиль</option>
         <option>Для мам</option>
-        <option>Экспертный/технический</option>
-        <option>Нейтрально/сдержанно</option>
+        <option>Storytelling (AIDA/история)</option>
       </select>
       <select id="descSecondary" disabled>
-        <option value="">— Формат/подход —</option>
-        <option>Структура: AIDA</option>
-        <option>Структура: Storytelling</option>
-        <option>Структура: Pain-Agitate-Solve</option>
-        <option>Формат: Списком (bullets)</option>
-        <option>Формат: Сплошным текстом</option>
+        <option value="">— Доп. модификаторы —</option>
+        <option>Список буллитами</option>
+        <option>Сплошной текст</option>
         <option>С эмодзи</option>
         <option>Без эмодзи</option>
+        <option>Экспертный тон</option>
+        <option>С юмором</option>
       </select>
     </div>
     <label class="desc-custom">
@@ -95,13 +93,11 @@ footer .contacts{margin-top:12px;font-size:14px;color:#333}
     <div class="field-header"><h3>Ключевые слова (CSV)</h3><button class="copy-btn" data-target="res-keys">Копировать</button></div>
     <textarea id="res-keys" rows="6" readonly></textarea>
   </div>
-    <div id="descOut" class="result-box" style="display:none;margin-top:16px;">
-    <div class="result-header">
-      <h3 style="margin:0;">Новое описание</h3>
-      <button id="copyDescBtn" type="button">Копировать</button>
-    </div>
-    <pre id="descText" class="result-pre"></pre>
-    <div id="descDiag" style="font-size:12px;color:#555;margin-top:4px;"></div>
+  <div id="descOut" style="display:none;margin-top:16px;">
+    <div class="field-header"><h3>Новое описание</h3><button class="copy-btn" id="copyDescBtn" data-target="descText" type="button">Копировать</button></div>
+    <textarea id="descText" rows="10" readonly></textarea>
+    <small id="descInfo"></small>
+    <div id="descDiagWrap" style="font-size:12px;color:#555;margin-top:4px;"></div>
   </div>
   <!-- Неброский индикатор использованной LLM-модели -->
   <div id="llmModel" style="font-size:12px;color:#888;margin-top:10px;"></div>
@@ -129,114 +125,112 @@ footer .contacts{margin-top:12px;font-size:14px;color:#333}
 
 <script>
 const $=s=>document.querySelector(s);
-let token = localStorage.getItem('wb6_jwt')||'';
+let token=localStorage.getItem('wb6_jwt')||'';
+const GEN_TIMEOUT_MS=Number((typeof process!=='undefined'&&process.env&&process.env.NEXT_PUBLIC_GEN_TIMEOUT_MS)||(typeof window!=='undefined'&&window.NEXT_PUBLIC_GEN_TIMEOUT_MS)||120000);
 
 function showQuota(){
   if(!token) return;
-  try{ const q=JSON.parse(atob(token.split('.')[1])).quota;
-       $('#quota').textContent='Осталось переписываний: '+q; }
-  catch(e){ console.error(e); }
+  try{const q=JSON.parse(atob(token.split('.')[1])).quota;$('#quota').textContent='Осталось переписываний: '+q;}catch(e){console.error(e);}
 }
 showQuota();
+
+let rewriteDescription=false;
+let stylePrimary='';
+let styleSecondary='';
+let styleCustom='';
+let description='';
+let descModelUsed='';
+let descTimingMs;
 
 const descRewrite=document.getElementById('descRewrite');
 const descPrimary=document.getElementById('descPrimary');
 const descSecondary=document.getElementById('descSecondary');
 const descCustomToggle=document.getElementById('descCustomToggle');
 const descCustom=document.getElementById('descCustom');
+
+function resetDesc(){
+  stylePrimary='';styleSecondary='';styleCustom='';
+  descPrimary.value='';descSecondary.value='';
+  descCustomToggle.checked=false;descCustom.value='';
+}
+
 descRewrite.addEventListener('change',()=>{
-  const on=descRewrite.checked;
-  [descPrimary,descSecondary,descCustomToggle].forEach(el=>el.disabled=!on);
-  descCustom.disabled=!on||!descCustomToggle.checked;
+  rewriteDescription=descRewrite.checked;
+  [descPrimary,descSecondary,descCustomToggle].forEach(el=>el.disabled=!rewriteDescription);
+  if(!rewriteDescription){resetDesc();descCustom.disabled=true;}else{descCustom.disabled=!descCustomToggle.checked;}
 });
+
+descPrimary.addEventListener('change',()=>{stylePrimary=descPrimary.value;});
+descSecondary.addEventListener('change',()=>{styleSecondary=descSecondary.value;});
 descCustomToggle.addEventListener('change',()=>{
-  descCustom.disabled=!descRewrite.checked||!descCustomToggle.checked;
+  const on=rewriteDescription&&descCustomToggle.checked;descCustom.disabled=!on;if(!on){styleCustom='';descCustom.value='';}
 });
+descCustom.addEventListener('input',()=>{styleCustom=descCustom.value;});
 
 const src=$('#src');
 const clear=$('#clear');
-src.addEventListener('input',()=>{
-  clear.style.display=src.value?'inline-block':'none';
-});
-clear.onclick=()=>{
-  src.value='';
-  clear.style.display='none';
-  $('#res').style.display='none';
-  src.focus();
-};
+src.addEventListener('input',()=>{clear.style.display=src.value?'inline-block':'none';});
+clear.onclick=()=>{src.value='';clear.style.display='none';$('#res').style.display='none';src.focus();};
 
 document.querySelectorAll('.copy-btn').forEach(btn=>{
-  btn.onclick=()=>{
-    const t=document.getElementById(btn.dataset.target);
-    navigator.clipboard.writeText(t.value);
-    btn.textContent='Скопировано';
-    setTimeout(()=>btn.textContent='Копировать',1000);
-  };
+  btn.onclick=()=>{const t=document.getElementById(btn.dataset.target);navigator.clipboard.writeText(t.value);btn.textContent='Скопировано';setTimeout(()=>btn.textContent='Копировать',1000);};
 });
 
-$('#run').onclick = async ()=>{
-  const prompt=$('#src').value.trim(); if(!prompt) return;
-  $('#run').disabled=true; $('#run').textContent='Генерирую…';
-  let js;
-  try{
-    const body={supplierId:0,prompt};
-    body.stylePrimary=descPrimary.value||null;
-    body.styleSecondary=descSecondary.value||null;
-    body.styleCustom=(descRewrite.checked&&descCustomToggle.checked&&descCustom.value.trim())?descCustom.value.trim():null;
-    body.rewriteDescription=!!descRewrite.checked;
+$('#run').onclick=async()=>{
+  const prompt=$('#src').value.trim();if(!prompt) return;
+  $('#run').disabled=true;$('#run').textContent='Генерирую…';
+  let js;try{
+    const body={supplierId:0,prompt,rewriteDescription,stylePrimary,styleSecondary,styleCustom};
     const controller=new AbortController();
-    const to=setTimeout(()=>controller.abort(),80000);
-    const r = await fetch('https://api.wb6.ru/rewrite',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify(body),
-      signal:controller.signal
-    });
-    clearTimeout(to);
-    js = await r.json();
+    const t=setTimeout(()=>controller.abort(),GEN_TIMEOUT_MS);
+    const r=await fetch('https://api.wb6.ru/rewrite',{
+      method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(body),signal:controller.signal
+    }).finally(()=>clearTimeout(t));
+    js=await r.json();
   }catch(err){
     console.error(err);
-    const el=document.getElementById('llmModel'); if(el) el.textContent='';
-    $('#run').disabled=false; $('#run').textContent='Сгенерировать';
-    if(err.name==='AbortError') alert('Истек тайм-аут ожидания описания. Попробуйте ещё раз или поменяйте настройки.');
+    const el=document.getElementById('llmModel');if(el) el.textContent='';
+    $('#run').disabled=false;$('#run').textContent='Сгенерировать';
+    if(err.name==='AbortError') alert('Превышен лимит ожидания. Увеличьте таймаут или попробуйте ещё раз.');
     return;
   }
-  if(js.error==='NO_CREDITS'){ location='pay.html'; return;}
-  if(js.token){ token=js.token; localStorage.setItem('wb6_jwt',token); showQuota(); }
-  if(js.title){
-    $('#res-title').value=js.title;
-    $('#res-bullets').value=(js.bullets||[]).join('\n');
-    $('#res-keys').value=(js.keywords||[]).join(', ');
-    $('#res').style.display='block';
-  }
+  if(js.error==='NO_CREDITS'){location='pay.html';return;}
+  if(js.token){token=js.token;localStorage.setItem('wb6_jwt',token);showQuota();}
+  if(js.title){$('#res-title').value=js.title;$('#res-bullets').value=(js.bullets||[]).join('\n');$('#res-keys').value=(js.keywords||[]).join(', ');$('#res').style.display='block';}
+
+  description=js.description||'';
+  descModelUsed=js.desc_model_used||js.model_used||'';
+  descTimingMs=js.desc_diag&&typeof js.desc_diag.desc_timing_ms==='number'?js.desc_diag.desc_timing_ms:undefined;
+
   const descOut=document.getElementById('descOut');
   const descTextEl=document.getElementById('descText');
-  const descDiag=document.getElementById('descDiag');
+  const descInfo=document.getElementById('descInfo');
+  const diagWrap=document.getElementById('descDiagWrap');
   const copyBtn=document.getElementById('copyDescBtn');
-  if(js.description&&js.description.trim()){
-    descTextEl.textContent=js.description.trim();
-    descDiag.textContent='';
+
+  if(description){
+    descTextEl.value=description;
+    const infoParts=[];if(descModelUsed) infoParts.push(descModelUsed);if(typeof descTimingMs==='number') infoParts.push(descTimingMs+' мс');
+    descInfo.textContent=infoParts.length?('Описание: '+infoParts.join(' · ')):'';
     descOut.style.display='block';
     copyBtn.style.display='inline-block';
-  }else if(js.desc_diag||js.desc_error){
-    const err=js.desc_error||'неизвестная ошибка';
-    const flow=(js.desc_diag&&js.desc_diag.desc_model_flow?js.desc_diag.desc_model_flow.map(m=>m.model).join(' → '):'');
-    const tm=(js.desc_diag&&typeof js.desc_diag.desc_timing_ms==='number')?js.desc_diag.desc_timing_ms:'';
-    descTextEl.textContent='';
-    descDiag.innerHTML=`Описание не сгенерировано: ${err}<br>(модели пробовались: ${flow}; время: ${tm} мс)`;
-    descOut.style.display='block';
-    copyBtn.style.display='none';
   }else{
     descOut.style.display='none';
+    copyBtn.style.display='none';
   }
-  copyBtn.onclick=()=>{
-    navigator.clipboard.writeText(descTextEl.textContent);
-  };
-  try{
-    const el=document.getElementById('llmModel');
-    if(el) el.textContent=js && js.model_used ? ('LLM: '+js.model_used) : '';
-  }catch(e){}
-  $('#run').disabled=false; $('#run').textContent='Сгенерировать';
+
+  diagWrap.innerHTML='';
+  const isDev=(typeof process!=='undefined'&&process.env&&process.env.NODE_ENV!=='production')||(typeof window!=='undefined'&&window.NODE_ENV!=='production');
+  if(js.desc_diag&&isDev){
+    descOut.style.display='block';
+    const a=document.createElement('a');a.href='#';a.textContent='Показать диагностику';
+    const pre=document.createElement('pre');pre.style.display='none';pre.textContent=JSON.stringify(js.desc_diag,null,2);
+    a.onclick=e=>{e.preventDefault();pre.style.display=pre.style.display==='none'?'block':'none';};
+    diagWrap.appendChild(a);diagWrap.appendChild(pre);
+  }
+
+  try{const el=document.getElementById('llmModel');if(el) el.textContent=js&&js.model_used?('LLM: '+js.model_used):'';}catch(e){}
+  $('#run').disabled=false;$('#run').textContent='Сгенерировать';
 };
 </script>
 </body></html>
