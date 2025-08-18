@@ -55,7 +55,9 @@ OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "30"))
 OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "800"))
 DESC_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT_DESC", "18"))  # сек
 DESC_MAX_OUTPUT = int(os.getenv("OPENAI_DESC_MAX_OUTPUT", "700"))  # токены/символы
-DESC_FALLBACKS = os.getenv("OPENAI_DESC_FALLBACK_MODELS", "gpt-4o,gpt-4o-mini").split(",")
+DESC_FALLBACKS = os.getenv("OPENAI_DESC_FALLBACK_MODELS", "gpt-4o,gpt-4o-mini").split(
+    ","
+)
 EXPOSE_MODEL_ERRORS = os.getenv("EXPOSE_MODEL_ERRORS", "0") == "1"
 OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "1"))
 WB_DEBUG = os.getenv("WB_DEBUG", "0") == "1"
@@ -276,10 +278,18 @@ def _wb_card_fetch_old(url: str, keep_html: bool = False) -> tuple[str, dict]:
                 return v.strip()
         return ""
 
-    JSON_FIELDS = ("descriptionHtml", "descriptionFull", "description", "descriptionShort")
+    JSON_FIELDS = (
+        "descriptionHtml",
+        "descriptionFull",
+        "description",
+        "descriptionShort",
+    )
 
     s = requests.Session()
-    ua = WB_UA or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ua = (
+        WB_UA
+        or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
     s.headers.update({"User-Agent": ua, "Accept": "application/json"})
 
     name, desc_html = "", ""
@@ -292,8 +302,18 @@ def _wb_card_fetch_old(url: str, keep_html: bool = False) -> tuple[str, dict]:
             r = s.get(u, timeout=WB_TIMEOUT or 6.0, allow_redirects=True)
             ctype = r.headers.get("Content-Type", "")
             ok_json = getattr(r, "ok", True) and ("application/json" in ctype)
-            length = int(r.headers.get("Content-Length") or 0) or len(getattr(r, "content", b"") or b"")
-            trace.append({"url": u, "status": getattr(r, "status_code", 0), "ctype": ctype, "ok_json": ok_json, "len": length})
+            length = int(r.headers.get("Content-Length") or 0) or len(
+                getattr(r, "content", b"") or b""
+            )
+            trace.append(
+                {
+                    "url": u,
+                    "status": getattr(r, "status_code", 0),
+                    "ctype": ctype,
+                    "ok_json": ok_json,
+                    "len": length,
+                }
+            )
             if ok_json:
                 js = r.json()
                 name = _pick_name(js) or name
@@ -326,12 +346,30 @@ def _wb_card_fetch_old(url: str, keep_html: bool = False) -> tuple[str, dict]:
             r = s.get(u, timeout=WB_TIMEOUT or 6.0)
             ctype = r.headers.get("Content-Type", "")
             ok_json = getattr(r, "ok", True) and ("application/json" in ctype)
-            length = int(r.headers.get("Content-Length") or 0) or len(getattr(r, "content", b"") or b"")
-            trace.append({"url": u, "status": getattr(r, "status_code", 0), "ctype": ctype, "ok_json": ok_json, "len": length})
+            length = int(r.headers.get("Content-Length") or 0) or len(
+                getattr(r, "content", b"") or b""
+            )
+            trace.append(
+                {
+                    "url": u,
+                    "status": getattr(r, "status_code", 0),
+                    "ctype": ctype,
+                    "ok_json": ok_json,
+                    "len": length,
+                }
+            )
             if ok_json:
                 js = r.json()
                 prods = js.get("data", {}).get("products", []) or []
-                prod = next((p for p in prods if (p.get("id") == nm_id or p.get("root") == nm_id) and p.get("description")), None)
+                prod = next(
+                    (
+                        p
+                        for p in prods
+                        if (p.get("id") == nm_id or p.get("root") == nm_id)
+                        and p.get("description")
+                    ),
+                    None,
+                )
                 if prod:
                     name = _pick_name(prod) or name
                     desc_html = prod.get("description") or ""
@@ -370,10 +408,17 @@ def wb_card_fetch(url: str, debug: bool = False) -> tuple[str, dict]:
                 return v.strip()
         return ""
 
-    JSON_FIELDS = ("descriptionHtml", "descriptionFull", "description", "descriptionShort")
+    JSON_FIELDS = (
+        "descriptionHtml",
+        "descriptionFull",
+        "description",
+        "descriptionShort",
+    )
 
     s = requests.Session()
-    s.headers.update({"User-Agent": WB_UA or "Mozilla/5.0", "Accept": "application/json"})
+    s.headers.update(
+        {"User-Agent": WB_UA or "Mozilla/5.0", "Accept": "application/json"}
+    )
 
     trace: list[dict] = []
     hit: dict | None = None
@@ -392,15 +437,31 @@ def wb_card_fetch(url: str, debug: bool = False) -> tuple[str, dict]:
             r = s.get(u, timeout=WB_TIMEOUT, allow_redirects=True)
             ctype = r.headers.get("Content-Type", "")
             ok_json = getattr(r, "ok", True) and ("application/json" in ctype)
-            length = int(r.headers.get("Content-Length") or 0) or len(getattr(r, "content", b"") or b"")
-            rec = {"url": u, "status": getattr(r, "status_code", 0), "ctype": ctype, "ok_json": ok_json, "len": length}
+            length = int(r.headers.get("Content-Length") or 0) or len(
+                getattr(r, "content", b"") or b""
+            )
+            rec = {
+                "url": u,
+                "status": getattr(r, "status_code", 0),
+                "ctype": ctype,
+                "ok_json": ok_json,
+                "len": length,
+            }
             trace.append(rec)
             if not ok_json:
                 return False
             js = r.json()
             if card_mode:
                 prods = js.get("data", {}).get("products", []) or []
-                prod = next((p for p in prods if (p.get("id") == nm or p.get("root") == nm) and p.get("description")), None)
+                prod = next(
+                    (
+                        p
+                        for p in prods
+                        if (p.get("id") == nm or p.get("root") == nm)
+                        and p.get("description")
+                    ),
+                    None,
+                )
                 if not prod:
                     return False
                 name = _pick_name(prod) or name
@@ -930,7 +991,9 @@ class Req(BaseModel):
     styleCustom: str | None = None
 
 
-def _desc_instructions(primary: str | None, secondary: str | None, custom: str | None) -> str:
+def _desc_instructions(
+    primary: str | None, secondary: str | None, custom: str | None
+) -> str:
     parts = []
     m = (primary or "").strip().lower()
     if m == "только seo":
@@ -956,7 +1019,9 @@ def _desc_instructions(primary: str | None, secondary: str | None, custom: str |
     if s == "структура: aida":
         parts.append("структура AIDA (Attention-Interest-Desire-Action)")
     elif s == "структура: storytelling":
-        parts.append("короткий сторителлинг: мини-история о том, как продукт решает проблему")
+        parts.append(
+            "короткий сторителлинг: мини-история о том, как продукт решает проблему"
+        )
     elif s == "структура: pain-agitate-solve":
         parts.append("подход Pain-Agitate-Solve")
     elif s == "формат: списком (bullets)":
@@ -978,20 +1043,40 @@ def _desc_instructions(primary: str | None, secondary: str | None, custom: str |
     return "; ".join(parts)
 
 
+def _min_meta(meta: dict | None) -> dict | None:
+    if not meta:
+        return None
+    out = {
+        "nm": meta.get("nm"),
+        "picked_len": meta.get("picked_len"),
+        "hit": meta.get("hit"),
+    }
+    if meta.get("hit") and meta["hit"].get("url"):
+        out["source_origin"] = meta["hit"]["url"]
+    return out
+
+
 @app.post("/rewrite")
 async def rewrite(r: Req, request: Request):
+    debug_flag = (
+        WB_DEBUG
+        or request.query_params.get("debug") == "1"
+        or request.headers.get("X-Debug") == "1"
+    )
     info = verify(request.headers.get("Authorization", "").replace("Bearer ", ""))
     if not info:
         info = {"sub": "anon", "quota": 3}  # 3 free
-    if info["quota"] <= 0:
-        return {"error": "NO_CREDITS"}
-    prompt = r.prompt.strip()
-    wb_meta = None
+    wb_meta: dict | None = None
+    wb_meta_min: dict | None = None
     source_len = None
     source_preview = ""
+    if info["quota"] <= 0:
+        return {"error": "NO_CREDITS", "wb_meta": wb_meta_min}
+    prompt = r.prompt.strip()
     if prompt.startswith("http") and "wildberries.ru" in prompt:
-        fetched_text, meta = wb_card_fetch(prompt, debug=WB_DEBUG)
+        fetched_text, meta = wb_card_fetch(prompt, debug=debug_flag)
         wb_meta = meta
+        wb_meta_min = _min_meta(meta)
         if fetched_text and len(fetched_text) >= 60:
             source_len = len(fetched_text)
             source_preview = fetched_text[:400]
@@ -1028,8 +1113,9 @@ async def rewrite(r: Req, request: Request):
         if source_len is not None:
             resp["source_len"] = source_len
             resp["source_preview"] = source_preview
-        if WB_DEBUG and wb_meta:
-            resp["wb_meta"] = wb_meta
+        resp["wb_meta"] = wb_meta_min
+        if debug_flag and wb_meta:
+            resp["wb_meta_trace"] = wb_meta.get("trace")
         return resp
     data, raw = _msg_to_data_and_raw(msg)
     gen_ms = int((time.monotonic() - t0) * 1000)
@@ -1089,8 +1175,9 @@ async def rewrite(r: Req, request: Request):
             if source_len is not None:
                 resp["source_len"] = source_len
                 resp["source_preview"] = source_preview
-            if WB_DEBUG and wb_meta:
-                resp["wb_meta"] = wb_meta
+            resp["wb_meta"] = wb_meta_min
+            if debug_flag and wb_meta:
+                resp["wb_meta_trace"] = wb_meta.get("trace")
             if EXPOSE_MODEL_ERRORS:
                 resp["model_used"] = used_model
             return resp
@@ -1110,8 +1197,9 @@ async def rewrite(r: Req, request: Request):
         if source_len is not None:
             resp["source_len"] = source_len
             resp["source_preview"] = source_preview
-        if WB_DEBUG and wb_meta:
-            resp["wb_meta"] = wb_meta
+        resp["wb_meta"] = wb_meta_min
+        if debug_flag and wb_meta:
+            resp["wb_meta_trace"] = wb_meta.get("trace")
         return resp
 
     info["quota"] -= 1
@@ -1123,9 +1211,7 @@ async def rewrite(r: Req, request: Request):
     if r.rewriteDescription:
         source_text = prompt
         instr = _desc_instructions(r.stylePrimary, r.styleSecondary, r.styleCustom)
-        sys = (
-            "Ты редактор маркетплейса. Перепиши связное ОПИСАНИЕ товара по инструкциям. Верни ТОЛЬКО текст описания, без пояснений."
-        )
+        sys = "Ты редактор маркетплейса. Перепиши связное ОПИСАНИЕ товара по инструкциям. Верни ТОЛЬКО текст описания, без пояснений."
         user = f"Инструкции: {instr}\n\nИсходный текст карточки:\n{source_text}"
         desc_text, desc_diag = generate_description_text(
             client,
@@ -1151,8 +1237,9 @@ async def rewrite(r: Req, request: Request):
     if source_len is not None:
         resp["source_len"] = source_len
         resp["source_preview"] = source_preview
-    if WB_DEBUG and wb_meta:
-        resp["wb_meta"] = wb_meta
+    resp["wb_meta"] = wb_meta_min
+    if debug_flag and wb_meta:
+        resp["wb_meta_trace"] = wb_meta.get("trace")
     if r.rewriteDescription:
         if desc_text:
             resp["desc_len"] = len(desc_text)
