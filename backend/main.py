@@ -259,18 +259,14 @@ def create_account(email: str, quota: int, inv: str):
     return token
 
 
-def wb_card_text(url: str, keep_html: bool = False) -> str:
+def wb_card_fetch(url: str, keep_html: bool = False) -> tuple[str, dict]:
     """
-    Возвращает *имя + подробное описание* товара WB.
-    Источники:
-      1) basket-{01..12}.wb.ru (card.json) — проверяем nm_id
-      2) static-basket-{01..12}.wb.ru (card.json) — проверяем nm_id
-      3) card.wb.ru (id/root == nmID и непустой description)
-      4) HTML fallback: __NEXT_DATA__ → descriptionFull|description
+    Возвращает (final_text, meta) по WB-ссылке.
+    meta = { nm_id, vol, part, hit, trace: [ {try/url, status, ctype, ok_json, len} ... ] }
     """
     m = re.search(r"/catalog/(\d+)/", url)
     if not m:
-        return url
+        return url, {"error": "bad_url"}
     nm_id = int(m.group(1))
 
     def _pick_name(d: dict) -> str:
@@ -280,126 +276,91 @@ def wb_card_text(url: str, keep_html: bool = False) -> str:
                 return v.strip()
         return ""
 
-    JSON_FIELDS = [
-        "descriptionHtml",
-        "descriptionFull",
-        "description",
-        "descriptionShort",
-    ]
+    JSON_FIELDS = ("descriptionHtml", "descriptionFull", "description", "descriptionShort")
 
     s = requests.Session()
-    ua = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    )
+    ua = WB_UA or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     s.headers.update({"User-Agent": ua, "Accept": "application/json"})
 
     name, desc_html = "", ""
     vol, part = nm_id // 100000, nm_id // 1000
-    tried = []
-    used_source = ""
-    used_host = ""
+    trace, hit = [], ""
 
-    for host_tpl in (
-        "https://basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm}/info/ru/card.json",
-        "https://static-basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm}/info/ru/card.json",
-    ):
-        if desc_html:
-            break
-        for i in range(1, 13):
-            try:
-                h = host_tpl.format(i=i, vol=vol, part=part, nm=nm_id)
-                tried.append(h)
-                r = s.get(h, timeout=WB_TIMEOUT)
-                ct = r.headers.get("Content-Type", "")
-                if "application/json" not in ct:
-                    continue
+    def _probe(u: str):
+        nonlocal name, desc_html, hit
+        try:
+            r = s.get(u, timeout=WB_TIMEOUT or 6.0, allow_redirects=True)
+            ctype = r.headers.get("Content-Type", "")
+            ok_json = getattr(r, "ok", True) and ("application/json" in ctype)
+            length = int(r.headers.get("Content-Length") or 0) or len(getattr(r, "content", b"") or b"")
+            trace.append({"url": u, "status": getattr(r, "status_code", 0), "ctype": ctype, "ok_json": ok_json, "len": length})
+            if ok_json:
                 js = r.json()
-                if (
-                    isinstance(js, dict)
-                    and js.get("nm_id")
-                    and int(js["nm_id"]) != nm_id
-                ):
-                    continue
                 name = _pick_name(js) or name
                 for f in JSON_FIELDS:
                     if js.get(f):
                         desc_html = js[f]
                         break
                 if desc_html:
-                    used_source = "basket" if "basket-" in h else "static-basket"
-                    used_host = h
-                    break
-            except Exception:
-                continue
+                    hit = u
+                    return True
+        except Exception as e:
+            trace.append({"url": u, "error": str(e)})
+        return False
 
+    # 1) basket-{01..12}
+    for i in range(1, 13):
+        u = f"https://basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json"
+        if _probe(u):
+            break
+    # 2) static-basket-{01..12} (если ещё не нашли)
+    if not desc_html:
+        for i in range(1, 13):
+            u = f"https://static-basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json"
+            if _probe(u):
+                break
+    # 3) card.wb.ru как последний шанс
     if not desc_html:
         try:
-            r = s.get(
-                f"https://card.wb.ru/cards/detail?appType=1&curr=rub&nm={nm_id}",
-                timeout=WB_TIMEOUT,
-            )
-            if "application/json" in r.headers.get("Content-Type", ""):
+            u = f"https://card.wb.ru/cards/detail?appType=1&curr=rub&nm={nm_id}"
+            r = s.get(u, timeout=WB_TIMEOUT or 6.0)
+            ctype = r.headers.get("Content-Type", "")
+            ok_json = getattr(r, "ok", True) and ("application/json" in ctype)
+            length = int(r.headers.get("Content-Length") or 0) or len(getattr(r, "content", b"") or b"")
+            trace.append({"url": u, "status": getattr(r, "status_code", 0), "ctype": ctype, "ok_json": ok_json, "len": length})
+            if ok_json:
                 js = r.json()
                 prods = js.get("data", {}).get("products", []) or []
-                prod = next(
-                    (
-                        p
-                        for p in prods
-                        if (p.get("id") == nm_id or p.get("root") == nm_id)
-                        and p.get("description")
-                    ),
-                    None,
-                )
+                prod = next((p for p in prods if (p.get("id") == nm_id or p.get("root") == nm_id) and p.get("description")), None)
                 if prod:
                     name = _pick_name(prod) or name
-                    desc_html = prod.get("description") or desc_html
-                    used_source, used_host = "card", "card.wb.ru"
-        except Exception:
-            pass
+                    desc_html = prod.get("description") or ""
+                    hit = u
+        except Exception as e:
+            trace.append({"url": u, "error": str(e)})
 
-    # HTML fallback
-    if not desc_html:
-        try:
-            s.headers.update({"Accept": "text/html"})
-            r = s.get(url, timeout=WB_TIMEOUT)
-            html_text = r.text
-            mjs = re.search(
-                r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html_text, re.S
-            )
-            if mjs:
-                data = json.loads(mjs.group(1))
-                prod = (
-                    data.get("props", {})
-                    .get("pageProps", {})
-                    .get("initialState", {})
-                    .get("products", {})
-                )
-                if isinstance(prod, dict):
-                    nm = prod.get("id") or prod.get("root") or nm_id
-                    if int(nm) == nm_id:
-                        name = prod.get("name") or name
-                        desc_html = (
-                            prod.get("descriptionFull") or prod.get("description") or ""
-                        )
-                        if desc_html:
-                            used_source, used_host = "html", "wildberries.ru"
-        except Exception:
-            pass
-
+    # Нормализация
     cleaned = re.sub(r"</?(p|li|br|ul|ol)[^>]*>", "\n", desc_html or "", flags=re.I)
     text = BeautifulSoup(cleaned, "html.parser").get_text("\n", strip=True)
     text = re.sub(r"\s+\n", "\n", text)
     text = re.sub(r"[ \t]{2,}", " ", html.unescape(text)).strip()
 
+    # Если безуспешно — вернём исходный url как раньше (но meta приложим)
     if len(text) < 60:
-        return url
+        meta = {"nm_id": nm_id, "vol": vol, "part": part, "hit": hit, "trace": trace}
+        return url, meta
 
-    if keep_html:
-        return (name + "\n\n" + (desc_html or "")).strip()
+    final = (name + "\n\n" + ((desc_html or "") if keep_html else text)).strip()
+    meta = {"nm_id": nm_id, "vol": vol, "part": part, "hit": hit, "trace": trace}
+    return final, meta
 
-    return (name + "\n\n" + text).strip()
+
+def wb_card_text(url: str, keep_html: bool = False) -> str:
+    """
+    Обратная совместимость: вернуть только текст (как раньше).
+    """
+    final, _meta = wb_card_fetch(url, keep_html=keep_html)
+    return final
 
 
 # ============================
@@ -979,18 +940,16 @@ async def rewrite(r: Req, request: Request):
     prompt = r.prompt.strip()
     wb_meta = None
     if prompt.startswith("http") and "wildberries.ru" in prompt:
-        fetched = wb_card_text(prompt)
-        if fetched == prompt or len(fetched) < 60:
-            resp = {
+        fetched_text, wb_meta = wb_card_fetch(prompt)
+        # если WB не достали — жёсткий фейл как и раньше
+        if fetched_text == prompt or len(fetched_text or "") < 60:
+            return {
                 "error": "WB_FETCH_FAILED",
                 "hint": "Попробуйте позже или укажите WB_COOKIES/WB_UA.",
+                "wb_meta": wb_meta,
             }
-            if WB_DEBUG:
-                resp["wb_meta"] = {"url": prompt}
-            return resp
-        prompt = fetched
-        if WB_DEBUG:
-            wb_meta = {"url": r.prompt, "fetched_len": len(fetched)}
+        # ок — используем детальный текст карточки
+        prompt = fetched_text
     try:
         t0 = time.monotonic()
         if MODEL.startswith("gpt-5"):
@@ -1019,7 +978,12 @@ async def rewrite(r: Req, request: Request):
             model_flow = [{"model": used_model, "mode": "json"}]
             msg = comp.choices[0].message
     except Exception as e:
-        return {"error": str(e)}
+        resp = {"error": str(e)}
+        if wb_meta:
+            resp["wb_meta"] = wb_meta
+            resp["source_len"] = len(prompt)
+            resp["source_preview"] = prompt[:500] if isinstance(prompt, str) else ""
+        return resp
     data, raw = _msg_to_data_and_raw(msg)
     gen_ms = int((time.monotonic() - t0) * 1000)
 
@@ -1075,8 +1039,10 @@ async def rewrite(r: Req, request: Request):
                 "model_flow": model_flow,
                 "timings": {"gen_ms": gen_ms, "repair_ms": 0},
             }
-            if wb_meta and WB_DEBUG:
+            if wb_meta:
                 resp["wb_meta"] = wb_meta
+                resp["source_len"] = len(prompt)
+                resp["source_preview"] = prompt[:500] if isinstance(prompt, str) else ""
             if EXPOSE_MODEL_ERRORS:
                 resp["model_used"] = used_model
             return resp
@@ -1093,8 +1059,10 @@ async def rewrite(r: Req, request: Request):
         }
         if EXPOSE_MODEL_ERRORS:
             resp["model_used"] = used_model
-        if wb_meta and WB_DEBUG:
+        if wb_meta:
             resp["wb_meta"] = wb_meta
+            resp["source_len"] = len(prompt)
+            resp["source_preview"] = prompt[:500] if isinstance(prompt, str) else ""
         return resp
 
     info["quota"] -= 1
@@ -1121,6 +1089,7 @@ async def rewrite(r: Req, request: Request):
         )
         if desc_text:
             out["description"] = desc_text
+            out["desc_len"] = len(desc_text)
 
     resp = {
         "token": jwt.encode(info, SECRET, "HS256"),
@@ -1129,18 +1098,16 @@ async def rewrite(r: Req, request: Request):
         "timings": {"gen_ms": gen_ms, "repair_ms": repair_ms},
         "repair_attempted": repair_attempted,
         "repair_used": repair_used,
-        **({"wb_meta": wb_meta} if (wb_meta and WB_DEBUG) else {}),
+        # Всегда отдаём WB-метаданные и превью источника, если это была WB-ссылка
+        **({"wb_meta": wb_meta, "source_len": len(prompt), "source_preview": (prompt[:500] if isinstance(prompt, str) else "")} if wb_meta else {}),
         **out,
     }
     if r.rewriteDescription and desc_diag is not None:
         resp["desc_diag"] = desc_diag
-        if desc_text:
-            try:
-                resp["desc_model_used"] = desc_diag["desc_model_flow"][-1]["model"]
-            except Exception:
-                pass
-        else:
-            resp["desc_error"] = desc_diag.get("desc_error")
+        try:
+            resp["desc_model_used"] = desc_diag["desc_model_flow"][-1]["model"]
+        except Exception:
+            pass
     return resp
 
 
