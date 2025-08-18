@@ -820,6 +820,58 @@ async def wbtest(nm: int = 18488530):
 class Req(BaseModel):
     supplierId: int
     prompt: str
+    rewriteDescription: bool = False
+    stylePrimary: str | None = None
+    styleSecondary: str | None = None
+    styleCustom: str | None = None
+
+
+def _desc_instructions(primary: str | None, secondary: str | None, custom: str | None) -> str:
+    parts = []
+    m = (primary or "").strip().lower()
+    if m == "только seo":
+        parts.append(
+            "сделай чисто SEO-описание: формально, без воды, включай релевантные ключевые фразы естественно"
+        )
+    elif m == "расширить":
+        parts.append("расширь текст примерно на 50%, добавь фактов и выгод")
+    elif m == "сократить":
+        parts.append("сократи текст примерно на 40%, оставь главное")
+    elif m == "казуально, как для друга":
+        parts.append("дружелюбный, разговорный тон")
+    elif m == "деловой стиль":
+        parts.append("официально-деловой тон, на 'Вы'")
+    elif m == "для мам":
+        parts.append("тёплый, сочувственный тон для мам маленьких детей")
+    elif m == "экспертный/технический":
+        parts.append("строгий экспертный стиль, терминология, по делу")
+    elif m == "нейтрально/сдержанно":
+        parts.append("нейтральный, фактический тон, без эмоций")
+
+    s = (secondary or "").strip().lower()
+    if s == "структура: aida":
+        parts.append("структура AIDA (Attention-Interest-Desire-Action)")
+    elif s == "структура: storytelling":
+        parts.append("короткий сторителлинг: мини-история о том, как продукт решает проблему")
+    elif s == "структура: pain-agitate-solve":
+        parts.append("подход Pain-Agitate-Solve")
+    elif s == "формат: списком (bullets)":
+        parts.append("оформи как маркированный список, 5–8 ёмких пунктов")
+    elif s == "формат: сплошным текстом":
+        parts.append("один-два абзаца сплошного текста, без списков")
+    elif s == "с эмодзи":
+        parts.append("вставь 2–4 уместных эмодзи")
+    elif s == "без эмодзи":
+        parts.append("без эмодзи")
+
+    if custom and custom.strip():
+        parts.append(custom.strip())
+
+    parts.append("русский язык; без HTML; без ссылок; не упоминай Wildberries")
+    parts.append(
+        "не выдумывай факты про состав/сертификацию, если их нет во входных данных"
+    )
+    return "; ".join(parts)
 
 
 @app.post("/rewrite")
@@ -953,6 +1005,47 @@ async def rewrite(r: Req, request: Request):
     info["quota"] -= 1
     if info["sub"] in ACCOUNTS:
         ACCOUNTS[info["sub"]]["quota"] = info["quota"]
+    out = dict(data)
+    if r.rewriteDescription:
+        source_text = prompt
+        instr = _desc_instructions(r.stylePrimary, r.styleSecondary, r.styleCustom)
+        sys = (
+            "Ты редактор маркетплейса. Перепиши связное ОПИСАНИЕ товара по инструкциям. Верни ТОЛЬКО текст описания, без пояснений."
+        )
+        user = f"Инструкции: {instr}\n\nИсходный текст карточки:\n{source_text}"
+        model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        description_text = None
+        try:
+            if model.startswith("gpt-5"):
+                res = client.responses.create(
+                    model=model,
+                    input=[
+                        {"role": "system", "content": sys},
+                        {"role": "user", "content": user},
+                    ],
+                )
+                try:
+                    description_text = (getattr(res, "output_text", "") or "").strip()
+                except Exception:
+                    for item in getattr(res, "output", []) or []:
+                        t = getattr(item, "content", None)
+                        if isinstance(t, str) and t.strip():
+                            description_text = t.strip()
+                            break
+            else:
+                cc = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": sys},
+                        {"role": "user", "content": user},
+                    ],
+                    temperature=0.2,
+                )
+                description_text = (cc.choices[0].message.content or "").strip()
+        except Exception:
+            description_text = None
+        if description_text:
+            out["description"] = description_text
     return {
         "token": jwt.encode(info, SECRET, "HS256"),
         "model_used": used_model,
@@ -961,7 +1054,7 @@ async def rewrite(r: Req, request: Request):
         "repair_attempted": repair_attempted,
         "repair_used": repair_used,
         **({"wb_meta": wb_meta} if (wb_meta and WB_DEBUG) else {}),
-        **data,
+        **out,
     }
 
 

@@ -24,6 +24,10 @@ input,textarea{width:100%;padding:12px;border:1px solid #ccc;border-radius:6px;m
 footer{margin:56px 0;text-align:center;font-size:14px;color:#666}
 footer nav a{color:#5E2E91;text-decoration:none;margin:0 6px}
 footer .contacts{margin-top:12px;font-size:14px;color:#333}
+.desc-settings{margin-top:10px;font-size:14px}
+.desc-row{display:flex;gap:8px;margin:8px 0;flex-wrap:wrap}
+.desc-custom{margin:6px 0;display:inline-block}
+#descCustom{width:100%;max-width:700px}
 </style>
 </head><body>
 
@@ -53,6 +57,36 @@ footer .contacts{margin-top:12px;font-size:14px;color:#333}
   <button class="cta" id="run">Сгенерировать</button>
   <button id="clear">Очистить</button>
   <div id="quota" style="margin-top:8px;color:#555"></div>
+  <div id="desc-settings" class="desc-settings">
+    <label><input type="checkbox" id="descRewrite"> переписать так же описание</label>
+    <div class="desc-row">
+      <select id="descPrimary" disabled>
+        <option value="">— Базовый режим/тон —</option>
+        <option>Только SEO</option>
+        <option>Расширить</option>
+        <option>Сократить</option>
+        <option>Казуально, как для друга</option>
+        <option>Деловой стиль</option>
+        <option>Для мам</option>
+        <option>Экспертный/технический</option>
+        <option>Нейтрально/сдержанно</option>
+      </select>
+      <select id="descSecondary" disabled>
+        <option value="">— Формат/подход —</option>
+        <option>Структура: AIDA</option>
+        <option>Структура: Storytelling</option>
+        <option>Структура: Pain-Agitate-Solve</option>
+        <option>Формат: Списком (bullets)</option>
+        <option>Формат: Сплошным текстом</option>
+        <option>С эмодзи</option>
+        <option>Без эмодзи</option>
+      </select>
+    </div>
+    <label class="desc-custom">
+      <input type="checkbox" id="descCustomToggle" disabled> пользовательский вариант
+    </label>
+    <input id="descCustom" type="text" placeholder="Например: до 800 символов, дружелюбно, с юмором, список с эмодзи" disabled>
+  </div>
   <div id="res">
     <div class="field-header"><h3>Заголовок</h3><button class="copy-btn" data-target="res-title">Копировать</button></div>
     <textarea id="res-title" rows="2" readonly></textarea>
@@ -60,6 +94,13 @@ footer .contacts{margin-top:12px;font-size:14px;color:#333}
     <textarea id="res-bullets" rows="6" readonly></textarea>
     <div class="field-header"><h3>Ключевые слова (CSV)</h3><button class="copy-btn" data-target="res-keys">Копировать</button></div>
     <textarea id="res-keys" rows="6" readonly></textarea>
+  </div>
+  <div id="descOut" class="result-box" style="display:none;margin-top:16px;">
+    <div class="result-header">
+      <h3 style="margin:0;">Новое описание</h3>
+      <button id="copyDescBtn" type="button">Копировать</button>
+    </div>
+    <pre id="descText" class="result-pre"></pre>
   </div>
   <!-- Неброский индикатор использованной LLM-модели -->
   <div id="llmModel" style="font-size:12px;color:#888;margin-top:10px;"></div>
@@ -97,6 +138,20 @@ function showQuota(){
 }
 showQuota();
 
+const descRewrite=document.getElementById('descRewrite');
+const descPrimary=document.getElementById('descPrimary');
+const descSecondary=document.getElementById('descSecondary');
+const descCustomToggle=document.getElementById('descCustomToggle');
+const descCustom=document.getElementById('descCustom');
+descRewrite.addEventListener('change',()=>{
+  const on=descRewrite.checked;
+  [descPrimary,descSecondary,descCustomToggle].forEach(el=>el.disabled=!on);
+  descCustom.disabled=!on||!descCustomToggle.checked;
+});
+descCustomToggle.addEventListener('change',()=>{
+  descCustom.disabled=!descRewrite.checked||!descCustomToggle.checked;
+});
+
 const src=$('#src');
 const clear=$('#clear');
 src.addEventListener('input',()=>{
@@ -123,10 +178,15 @@ $('#run').onclick = async ()=>{
   $('#run').disabled=true; $('#run').textContent='Генерирую…';
   let js;
   try{
+    const body={supplierId:0,prompt};
+    body.stylePrimary=descPrimary.value||null;
+    body.styleSecondary=descSecondary.value||null;
+    body.styleCustom=(descRewrite.checked&&descCustomToggle.checked&&descCustom.value.trim())?descCustom.value.trim():null;
+    body.rewriteDescription=!!descRewrite.checked;
     const r = await fetch('https://api.wb6.ru/rewrite',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify({supplierId:0,prompt})
+      body:JSON.stringify(body)
     });
     js = await r.json();
   }catch(err){
@@ -143,6 +203,15 @@ $('#run').onclick = async ()=>{
     $('#res-keys').value=(js.keywords||[]).join(', ');
     $('#res').style.display='block';
   }
+  if(js.description&&js.description.trim()){
+    document.getElementById('descText').textContent=js.description.trim();
+    document.getElementById('descOut').style.display='block';
+  }else{
+    document.getElementById('descOut').style.display='none';
+  }
+  document.getElementById('copyDescBtn').onclick=()=>{
+    navigator.clipboard.writeText(document.getElementById('descText').textContent);
+  };
   try{
     const el=document.getElementById('llmModel');
     if(el) el.textContent=js && js.model_used ? ('LLM: '+js.model_used) : '';
