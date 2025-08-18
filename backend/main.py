@@ -259,7 +259,7 @@ def create_account(email: str, quota: int, inv: str):
     return token
 
 
-def wb_card_fetch(url: str, keep_html: bool = False) -> tuple[str, dict]:
+def _wb_card_fetch_old(url: str, keep_html: bool = False) -> tuple[str, dict]:
     """
     Возвращает (final_text, meta) по WB-ссылке.
     meta = { nm_id, vol, part, hit, trace: [ {try/url, status, ctype, ok_json, len} ... ] }
@@ -355,11 +355,102 @@ def wb_card_fetch(url: str, keep_html: bool = False) -> tuple[str, dict]:
     return final, meta
 
 
-def wb_card_text(url: str, keep_html: bool = False) -> str:
-    """
-    Обратная совместимость: вернуть только текст (как раньше).
-    """
-    final, _meta = wb_card_fetch(url, keep_html=keep_html)
+def wb_card_fetch(url: str, debug: bool = False) -> tuple[str, dict]:
+    """Новая обёртка: вернуть очищенный текст и диагностику."""
+    m = re.search(r"/catalog/(\d+)/", url)
+    if not m:
+        return "", {"nm": None, "hit": None, "trace": [], "picked_len": 0}
+    nm = int(m.group(1))
+    vol, part = nm // 100000, nm // 1000
+
+    def _pick_name(d: dict) -> str:
+        for k in ("imt_name", "name", "object"):
+            v = d.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+
+    JSON_FIELDS = ("descriptionHtml", "descriptionFull", "description", "descriptionShort")
+
+    s = requests.Session()
+    s.headers.update({"User-Agent": WB_UA or "Mozilla/5.0", "Accept": "application/json"})
+
+    trace: list[dict] = []
+    hit: dict | None = None
+    name, final_text = "", ""
+
+    def _norm(html_text: str) -> str:
+        cleaned = re.sub(r"</?(p|li|br|ul|ol)[^>]*>", "\n", html_text or "", flags=re.I)
+        txt = BeautifulSoup(cleaned, "html.parser").get_text("\n", strip=True)
+        txt = re.sub(r"\s+\n", "\n", txt)
+        txt = re.sub(r"[ \t]{2,}", " ", html.unescape(txt)).strip()
+        return txt
+
+    def _probe(u: str, card_mode: bool = False) -> bool:
+        nonlocal name, final_text, hit
+        try:
+            r = s.get(u, timeout=WB_TIMEOUT, allow_redirects=True)
+            ctype = r.headers.get("Content-Type", "")
+            ok_json = getattr(r, "ok", True) and ("application/json" in ctype)
+            length = int(r.headers.get("Content-Length") or 0) or len(getattr(r, "content", b"") or b"")
+            rec = {"url": u, "status": getattr(r, "status_code", 0), "ctype": ctype, "ok_json": ok_json, "len": length}
+            trace.append(rec)
+            if not ok_json:
+                return False
+            js = r.json()
+            if card_mode:
+                prods = js.get("data", {}).get("products", []) or []
+                prod = next((p for p in prods if (p.get("id") == nm or p.get("root") == nm) and p.get("description")), None)
+                if not prod:
+                    return False
+                name = _pick_name(prod) or name
+                html_desc = prod.get("description") or ""
+            else:
+                name = _pick_name(js) or name
+                html_desc = ""
+                for f in JSON_FIELDS:
+                    if js.get(f):
+                        html_desc = js[f]
+                        break
+            if not html_desc:
+                return False
+            text = _norm(html_desc)
+            if len(text) < 60:
+                return False
+            hit = {k: rec[k] for k in ("url", "status", "ctype", "len")}
+            final_text = f"{name}\n\n{text}".strip()
+            return True
+        except Exception as e:
+            trace.append({"url": u, "error": str(e)})
+            return False
+
+    for tpl in (
+        f"https://basket-{{i:02d}}.wb.ru/vol{vol}/part{part}/{nm}/info/ru/card.json",
+        f"https://static-basket-{{i:02d}}.wb.ru/vol{vol}/part{part}/{nm}/info/ru/card.json",
+    ):
+        for i in range(1, 13):
+            if _probe(tpl.format(i=i)):
+                break
+        if final_text:
+            break
+
+    if not final_text:
+        _probe(
+            f"https://card.wb.ru/cards/detail?appType=1&curr=rub&nm={nm}",
+            card_mode=True,
+        )
+
+    meta = {
+        "nm": nm,
+        "hit": hit,
+        "trace": trace if debug else trace[:3],
+        "picked_len": len(final_text),
+    }
+    return final_text if final_text else "", meta
+
+
+def wb_card_text(url: str) -> str:
+    final, _ = wb_card_fetch(url, debug=True)
     return final
 
 
@@ -823,53 +914,10 @@ def generate_description_text(
 # --- Диагностика источников WB (без влияния на основную логику) ---
 @app.get("/wbtest")
 async def wbtest(nm: int = 18488530):
-    nm_id = int(nm)
-    vol, part = nm_id // 100000, nm_id // 1000
-    s = requests.Session()
-    s.headers.update(
-        {
-            "User-Agent": WB_UA,
-            "Accept": "application/json",
-            "Accept-Language": "ru,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "close",
-        }
-    )
-
-    def try_url(u: str):
-        try:
-            r = s.get(u, timeout=8, allow_redirects=True)
-            ctype = r.headers.get("Content-Type", "")
-            ok_json = r.ok and ("application/json" in ctype)
-            length = int(r.headers.get("Content-Length") or 0) or len(r.content or b"")
-            return {
-                "url": u,
-                "status": r.status_code,
-                "ctype": ctype,
-                "ok_json": ok_json,
-                "len": length,
-            }
-        except Exception as e:
-            return {"url": u, "error": str(e)}
-
-    results = []
-    for host_tpl in (
-        "https://basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm}/info/ru/card.json",
-        "https://static-basket-{i:02d}.wb.ru/vol{vol}/part{part}/{nm}/info/ru/card.json",
-    ):
-        for i in range(1, 13):
-            u = host_tpl.format(i=i, vol=vol, part=part, nm=nm_id)
-            results.append(try_url(u))
-
-    card = f"https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm_id}"
-    results.append(try_url(card))
-
-    hits = [r for r in results if r.get("ok_json")]
-    return {
-        "nm": nm_id,
-        "hits": hits,
-        "results": results,
-    }
+    url = f"https://www.wildberries.ru/catalog/{int(nm)}/detail.aspx"
+    _txt, meta = wb_card_fetch(url, debug=True)
+    hits = [meta["hit"]] if meta.get("hit") else []
+    return {"nm": meta.get("nm", nm), "hits": hits, "results": meta.get("trace", [])}
 
 
 # ── API ───────────────────────────────────────
@@ -939,17 +987,15 @@ async def rewrite(r: Req, request: Request):
         return {"error": "NO_CREDITS"}
     prompt = r.prompt.strip()
     wb_meta = None
+    source_len = None
+    source_preview = ""
     if prompt.startswith("http") and "wildberries.ru" in prompt:
-        fetched_text, wb_meta = wb_card_fetch(prompt)
-        # если WB не достали — жёсткий фейл как и раньше
-        if fetched_text == prompt or len(fetched_text or "") < 60:
-            return {
-                "error": "WB_FETCH_FAILED",
-                "hint": "Попробуйте позже или укажите WB_COOKIES/WB_UA.",
-                "wb_meta": wb_meta,
-            }
-        # ок — используем детальный текст карточки
-        prompt = fetched_text
+        fetched_text, meta = wb_card_fetch(prompt, debug=WB_DEBUG)
+        wb_meta = meta
+        if fetched_text and len(fetched_text) >= 60:
+            source_len = len(fetched_text)
+            source_preview = fetched_text[:400]
+            prompt = fetched_text
     try:
         t0 = time.monotonic()
         if MODEL.startswith("gpt-5"):
@@ -979,10 +1025,11 @@ async def rewrite(r: Req, request: Request):
             msg = comp.choices[0].message
     except Exception as e:
         resp = {"error": str(e)}
-        if wb_meta:
+        if source_len is not None:
+            resp["source_len"] = source_len
+            resp["source_preview"] = source_preview
+        if WB_DEBUG and wb_meta:
             resp["wb_meta"] = wb_meta
-            resp["source_len"] = len(prompt)
-            resp["source_preview"] = prompt[:500] if isinstance(prompt, str) else ""
         return resp
     data, raw = _msg_to_data_and_raw(msg)
     gen_ms = int((time.monotonic() - t0) * 1000)
@@ -1039,10 +1086,11 @@ async def rewrite(r: Req, request: Request):
                 "model_flow": model_flow,
                 "timings": {"gen_ms": gen_ms, "repair_ms": 0},
             }
-            if wb_meta:
+            if source_len is not None:
+                resp["source_len"] = source_len
+                resp["source_preview"] = source_preview
+            if WB_DEBUG and wb_meta:
                 resp["wb_meta"] = wb_meta
-                resp["source_len"] = len(prompt)
-                resp["source_preview"] = prompt[:500] if isinstance(prompt, str) else ""
             if EXPOSE_MODEL_ERRORS:
                 resp["model_used"] = used_model
             return resp
@@ -1059,10 +1107,11 @@ async def rewrite(r: Req, request: Request):
         }
         if EXPOSE_MODEL_ERRORS:
             resp["model_used"] = used_model
-        if wb_meta:
+        if source_len is not None:
+            resp["source_len"] = source_len
+            resp["source_preview"] = source_preview
+        if WB_DEBUG and wb_meta:
             resp["wb_meta"] = wb_meta
-            resp["source_len"] = len(prompt)
-            resp["source_preview"] = prompt[:500] if isinstance(prompt, str) else ""
         return resp
 
     info["quota"] -= 1
@@ -1089,7 +1138,6 @@ async def rewrite(r: Req, request: Request):
         )
         if desc_text:
             out["description"] = desc_text
-            out["desc_len"] = len(desc_text)
 
     resp = {
         "token": jwt.encode(info, SECRET, "HS256"),
@@ -1098,16 +1146,27 @@ async def rewrite(r: Req, request: Request):
         "timings": {"gen_ms": gen_ms, "repair_ms": repair_ms},
         "repair_attempted": repair_attempted,
         "repair_used": repair_used,
-        # Всегда отдаём WB-метаданные и превью источника, если это была WB-ссылка
-        **({"wb_meta": wb_meta, "source_len": len(prompt), "source_preview": (prompt[:500] if isinstance(prompt, str) else "")} if wb_meta else {}),
         **out,
     }
-    if r.rewriteDescription and desc_diag is not None:
-        resp["desc_diag"] = desc_diag
-        try:
-            resp["desc_model_used"] = desc_diag["desc_model_flow"][-1]["model"]
-        except Exception:
-            pass
+    if source_len is not None:
+        resp["source_len"] = source_len
+        resp["source_preview"] = source_preview
+    if WB_DEBUG and wb_meta:
+        resp["wb_meta"] = wb_meta
+    if r.rewriteDescription:
+        if desc_text:
+            resp["desc_len"] = len(desc_text)
+            try:
+                resp["desc_model_used"] = desc_diag["desc_model_flow"][-1]["model"]
+            except Exception:
+                pass
+            resp["desc_diag"] = desc_diag
+        else:
+            if desc_diag:
+                resp["desc_diag"] = desc_diag
+                resp["desc_error"] = desc_diag.get("desc_error")
+            else:
+                resp["desc_error"] = "no_desc"
     return resp
 
 
