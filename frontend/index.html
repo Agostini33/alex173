@@ -95,12 +95,13 @@ footer .contacts{margin-top:12px;font-size:14px;color:#333}
     <div class="field-header"><h3>Ключевые слова (CSV)</h3><button class="copy-btn" data-target="res-keys">Копировать</button></div>
     <textarea id="res-keys" rows="6" readonly></textarea>
   </div>
-  <div id="descOut" class="result-box" style="display:none;margin-top:16px;">
+    <div id="descOut" class="result-box" style="display:none;margin-top:16px;">
     <div class="result-header">
       <h3 style="margin:0;">Новое описание</h3>
       <button id="copyDescBtn" type="button">Копировать</button>
     </div>
     <pre id="descText" class="result-pre"></pre>
+    <div id="descDiag" style="font-size:12px;color:#555;margin-top:4px;"></div>
   </div>
   <!-- Неброский индикатор использованной LLM-модели -->
   <div id="llmModel" style="font-size:12px;color:#888;margin-top:10px;"></div>
@@ -183,16 +184,21 @@ $('#run').onclick = async ()=>{
     body.styleSecondary=descSecondary.value||null;
     body.styleCustom=(descRewrite.checked&&descCustomToggle.checked&&descCustom.value.trim())?descCustom.value.trim():null;
     body.rewriteDescription=!!descRewrite.checked;
+    const controller=new AbortController();
+    const to=setTimeout(()=>controller.abort(),80000);
     const r = await fetch('https://api.wb6.ru/rewrite',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify(body)
+      body:JSON.stringify(body),
+      signal:controller.signal
     });
+    clearTimeout(to);
     js = await r.json();
   }catch(err){
     console.error(err);
     const el=document.getElementById('llmModel'); if(el) el.textContent='';
     $('#run').disabled=false; $('#run').textContent='Сгенерировать';
+    if(err.name==='AbortError') alert('Истек тайм-аут ожидания описания. Попробуйте ещё раз или поменяйте настройки.');
     return;
   }
   if(js.error==='NO_CREDITS'){ location='pay.html'; return;}
@@ -203,14 +209,28 @@ $('#run').onclick = async ()=>{
     $('#res-keys').value=(js.keywords||[]).join(', ');
     $('#res').style.display='block';
   }
+  const descOut=document.getElementById('descOut');
+  const descTextEl=document.getElementById('descText');
+  const descDiag=document.getElementById('descDiag');
+  const copyBtn=document.getElementById('copyDescBtn');
   if(js.description&&js.description.trim()){
-    document.getElementById('descText').textContent=js.description.trim();
-    document.getElementById('descOut').style.display='block';
+    descTextEl.textContent=js.description.trim();
+    descDiag.textContent='';
+    descOut.style.display='block';
+    copyBtn.style.display='inline-block';
+  }else if(js.desc_diag||js.desc_error){
+    const err=js.desc_error||'неизвестная ошибка';
+    const flow=(js.desc_diag&&js.desc_diag.desc_model_flow?js.desc_diag.desc_model_flow.map(m=>m.model).join(' → '):'');
+    const tm=(js.desc_diag&&typeof js.desc_diag.desc_timing_ms==='number')?js.desc_diag.desc_timing_ms:'';
+    descTextEl.textContent='';
+    descDiag.innerHTML=`Описание не сгенерировано: ${err}<br>(модели пробовались: ${flow}; время: ${tm} мс)`;
+    descOut.style.display='block';
+    copyBtn.style.display='none';
   }else{
-    document.getElementById('descOut').style.display='none';
+    descOut.style.display='none';
   }
-  document.getElementById('copyDescBtn').onclick=()=>{
-    navigator.clipboard.writeText(document.getElementById('descText').textContent);
+  copyBtn.onclick=()=>{
+    navigator.clipboard.writeText(descTextEl.textContent);
   };
   try{
     const el=document.getElementById('llmModel');
