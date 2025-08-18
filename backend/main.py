@@ -39,6 +39,14 @@ if not OPENAI_KEY:
         "❌ OPENAI_API_KEY не установлен. Укажите его в Railway/GitHub Secrets."
     )
 client = openai.OpenAI(api_key=OPENAI_KEY)
+
+# Настройки JSON-режима и лимитов вывода
+OPENAI_JSON_MODE = os.getenv("OPENAI_JSON_MODE", "schema").lower()  # off|object|schema
+try:
+    OPENAI_MAX_OUTPUT_TOKENS = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "0"))
+except Exception:
+    OPENAI_MAX_OUTPUT_TOKENS = 0
+
 # Модель по умолчанию — GPT-5; можно переопределить через env
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
 # Фолбэк-модель на случай недоступности основной
@@ -46,7 +54,6 @@ MODEL_FALLBACK = os.getenv("OPENAI_MODEL_FALLBACK", "gpt-4o-mini")
 OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "30"))
 OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "800"))
 EXPOSE_MODEL_ERRORS = os.getenv("EXPOSE_MODEL_ERRORS", "0") == "1"
-OPENAI_JSON_MODE = os.getenv("OPENAI_JSON_MODE", "object").lower()  # schema|object|off
 OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "1"))
 WB_DEBUG = os.getenv("WB_DEBUG", "0") == "1"
 WB_TIMEOUT = float(os.getenv("WB_TIMEOUT", "6.0"))
@@ -667,13 +674,14 @@ def _openai_responses(*, messages, model, json_mode: bool):
     """
     Новый путь: Responses API — используем для gpt-5.
     input — это список messages со структурой роли/контента.
-    Не задаём temperature и max_output_tokens (по умолчанию стабильно для JSON).
     """
     rf = _json_response_format(model, OPENAI_JSON_MODE) if json_mode else None
     opts = getattr(client.responses, "with_options", None)
     kwargs = {"model": model, "input": messages}
     if rf:
         kwargs["response_format"] = rf
+    if OPENAI_MAX_OUTPUT_TOKENS > 0:
+        kwargs["max_output_tokens"] = OPENAI_MAX_OUTPUT_TOKENS
 
     def _create_call(kws):
         if callable(opts):
@@ -686,6 +694,14 @@ def _openai_responses(*, messages, model, json_mode: bool):
     try:
         return _create_call(kwargs)
     except TypeError:
+        # Параметр max_output_tokens может не поддерживаться старым SDK
+        if "max_output_tokens" in kwargs:
+            try:
+                kwargs2 = dict(kwargs)
+                kwargs2.pop("max_output_tokens", None)
+                return _create_call(kwargs2)
+            except TypeError:
+                pass
         guard = (
             "ВЕРНИ СТРОГО ВАЛИДНЫЙ JSON-ОБЪЕКТ ровно такого вида:\n"
             '{ "title": string, "bullets": [6 strings], "keywords": [20 strings] }\n'
@@ -694,7 +710,13 @@ def _openai_responses(*, messages, model, json_mode: bool):
         )
         guarded = [{"role": "system", "content": guard}] + list(messages or [])
         fallback_kwargs = {"model": model, "input": guarded}
-        return _create_call(fallback_kwargs)
+        if OPENAI_MAX_OUTPUT_TOKENS > 0:
+            try:
+                fallback_kwargs["max_output_tokens"] = OPENAI_MAX_OUTPUT_TOKENS
+                return _create_call(fallback_kwargs)
+            except TypeError:
+                pass
+        return _create_call({"model": model, "input": guarded})
 
 
 def _msg_from_response(resp):
