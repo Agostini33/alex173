@@ -663,8 +663,6 @@ def _openai_chat(messages, model, max_tokens=OPENAI_MAX_TOKENS, json_mode: bool 
             raise
 
 
-
-
 def _openai_responses(*, messages, model, json_mode: bool):
     """
     Новый путь: Responses API — используем для gpt-5.
@@ -676,15 +674,27 @@ def _openai_responses(*, messages, model, json_mode: bool):
     kwargs = {"model": model, "input": messages}
     if rf:
         kwargs["response_format"] = rf
-    if callable(opts):
-        try:
-            return opts(timeout=OPENAI_TIMEOUT).create(**kwargs)
-        except Exception:
-            pass
+
+    def _create_call(kws):
+        if callable(opts):
+            try:
+                return opts(timeout=OPENAI_TIMEOUT).create(**kws)
+            except Exception:
+                pass
+        return client.responses.create(timeout=OPENAI_TIMEOUT, **kws)
+
     try:
-        return client.responses.create(timeout=OPENAI_TIMEOUT, **kwargs)
+        return _create_call(kwargs)
     except TypeError:
-        return client.responses.create(**kwargs)
+        guard = (
+            "ВЕРНИ СТРОГО ВАЛИДНЫЙ JSON-ОБЪЕКТ ровно такого вида:\n"
+            '{ "title": string, "bullets": [6 strings], "keywords": [20 strings] }\n'
+            "Без комментариев, без пояснений, без лишних полей. Только JSON.\n"
+            "bullets — ровно 6 строк, keywords — ровно 20 строк."
+        )
+        guarded = [{"role": "system", "content": guard}] + list(messages or [])
+        fallback_kwargs = {"model": model, "input": guarded}
+        return _create_call(fallback_kwargs)
 
 
 def _msg_from_response(resp):
@@ -693,9 +703,11 @@ def _msg_from_response(resp):
     Возвращаем объект-пустышку с полем .content = output_text (если он есть),
     а также склеиваем все json/text части.
     """
+
     class _M:
         def __init__(self, text):
             self.content = text
+
     raw = ""
     try:
         ot = getattr(resp, "output_text", None)
@@ -719,6 +731,7 @@ def _msg_from_response(resp):
                     if js is not None:
                         try:
                             import json as _json
+
                             chunks.append(_json.dumps(js, ensure_ascii=False))
                         except Exception:
                             pass
@@ -727,6 +740,8 @@ def _msg_from_response(resp):
     except Exception:
         pass
     return _M(raw or "")
+
+
 # --- Диагностика источников WB (без влияния на основную логику) ---
 @app.get("/wbtest")
 async def wbtest(nm: int = 18488530):
@@ -947,7 +962,7 @@ async def gentest(
                     {"role": "user", "content": q},
                 ],
                 model=m,
-                json_mode=bool(json)
+                json_mode=bool(json),
             )
             used_model = getattr(comp, "model", m)
             resp_msg = _msg_from_response(comp)
@@ -957,7 +972,9 @@ async def gentest(
                     {"role": "system", "content": PROMPT},
                     {"role": "user", "content": q},
                 ],
-                model=m, max_tokens=OPENAI_MAX_TOKENS, json_mode=bool(json)
+                model=m,
+                max_tokens=OPENAI_MAX_TOKENS,
+                json_mode=bool(json),
             )
             used_model = getattr(comp, "model", m)
             resp_msg = comp.choices[0].message
