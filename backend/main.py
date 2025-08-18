@@ -663,6 +663,70 @@ def _openai_chat(messages, model, max_tokens=OPENAI_MAX_TOKENS, json_mode: bool 
             raise
 
 
+
+
+def _openai_responses(*, messages, model, json_mode: bool):
+    """
+    Новый путь: Responses API — используем для gpt-5.
+    input — это список messages со структурой роли/контента.
+    Не задаём temperature и max_output_tokens (по умолчанию стабильно для JSON).
+    """
+    rf = _json_response_format(model, OPENAI_JSON_MODE) if json_mode else None
+    opts = getattr(client.responses, "with_options", None)
+    kwargs = {"model": model, "input": messages}
+    if rf:
+        kwargs["response_format"] = rf
+    if callable(opts):
+        try:
+            return opts(timeout=OPENAI_TIMEOUT).create(**kwargs)
+        except Exception:
+            pass
+    try:
+        return client.responses.create(timeout=OPENAI_TIMEOUT, **kwargs)
+    except TypeError:
+        return client.responses.create(**kwargs)
+
+
+def _msg_from_response(resp):
+    """
+    Унифицируем извлечение 'сообщения' из Responses API под интерфейс _msg_to_data_and_raw.
+    Возвращаем объект-пустышку с полем .content = output_text (если он есть),
+    а также склеиваем все json/text части.
+    """
+    class _M:
+        def __init__(self, text):
+            self.content = text
+    raw = ""
+    try:
+        ot = getattr(resp, "output_text", None)
+        if isinstance(ot, str) and ot.strip():
+            raw = ot
+    except Exception:
+        pass
+    try:
+        out = getattr(resp, "output", None) or []
+        chunks = []
+        for item in out:
+            cont = getattr(item, "content", None) or []
+            for part in cont:
+                ptype = getattr(part, "type", None)
+                if ptype in ("output_text", "text", "reasoning"):
+                    t = getattr(getattr(part, "text", None), "value", None)
+                    if isinstance(t, str) and t.strip():
+                        chunks.append(t)
+                elif ptype == "output_json":
+                    js = getattr(part, "json", None)
+                    if js is not None:
+                        try:
+                            import json as _json
+                            chunks.append(_json.dumps(js, ensure_ascii=False))
+                        except Exception:
+                            pass
+        if chunks and not raw:
+            raw = "\n".join(chunks).strip()
+    except Exception:
+        pass
+    return _M(raw or "")
 # --- Диагностика источников WB (без влияния на основную логику) ---
 @app.get("/wbtest")
 async def wbtest(nm: int = 18488530):
@@ -745,20 +809,33 @@ async def rewrite(r: Req, request: Request):
             wb_meta = {"url": r.prompt, "fetched_len": len(fetched)}
     try:
         t0 = time.monotonic()
-        comp = _openai_chat(
-            messages=[
-                {"role": "system", "content": PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            model=MODEL,
-            max_tokens=OPENAI_MAX_TOKENS,
-            json_mode=True,
-        )
+        if MODEL.startswith("gpt-5"):
+            comp = _openai_responses(
+                messages=[
+                    {"role": "system", "content": PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                model=MODEL,
+                json_mode=True,
+            )
+            used_model = getattr(comp, "model", MODEL)
+            model_flow = [{"model": used_model, "mode": "json"}]
+            msg = _msg_from_response(comp)
+        else:
+            comp = _openai_chat(
+                messages=[
+                    {"role": "system", "content": PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                model=MODEL,
+                max_tokens=OPENAI_MAX_TOKENS,
+                json_mode=True,
+            )
+            used_model = getattr(comp, "model", MODEL)
+            model_flow = [{"model": used_model, "mode": "json"}]
+            msg = comp.choices[0].message
     except Exception as e:
         return {"error": str(e)}
-    used_model = getattr(comp, "model", MODEL)
-    model_flow = [{"model": used_model, "mode": "json"}]
-    msg = comp.choices[0].message
     data, raw = _msg_to_data_and_raw(msg)
     gen_ms = int((time.monotonic() - t0) * 1000)
 
@@ -772,22 +849,37 @@ async def rewrite(r: Req, request: Request):
         if len(repair_input) >= 30:
             rt0 = time.monotonic()
             try:
-                repair = _openai_chat(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "Верни строго валидный JSON по схеме {title, bullets[6], keywords[20]} без комментариев и пояснений.",
-                        },
-                        {"role": "user", "content": repair_input[:8000]},
-                    ],
-                    model=MODEL_FALLBACK,
-                    max_tokens=OPENAI_MAX_TOKENS,
-                    json_mode=True,
-                )
-                d2, _raw2 = _msg_to_data_and_raw(repair.choices[0].message)
+                if MODEL_FALLBACK.startswith("gpt-5"):
+                    repair_resp = _openai_responses(
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "Верни строго валидный JSON по схеме {title, bullets[6], keywords[20]} без комментариев и пояснений.",
+                            },
+                            {"role": "user", "content": repair_input[:8000]},
+                        ],
+                        model=MODEL_FALLBACK,
+                        json_mode=True,
+                    )
+                    d2, _raw2 = _msg_to_data_and_raw(_msg_from_response(repair_resp))
+                    used_model = getattr(repair_resp, "model", used_model)
+                else:
+                    repair = _openai_chat(
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "Верни строго валидный JSON по схеме {title, bullets[6], keywords[20]} без комментариев и пояснений.",
+                            },
+                            {"role": "user", "content": repair_input[:8000]},
+                        ],
+                        model=MODEL_FALLBACK,
+                        max_tokens=OPENAI_MAX_TOKENS,
+                        json_mode=True,
+                    )
+                    d2, _raw2 = _msg_to_data_and_raw(repair.choices[0].message)
+                    used_model = getattr(repair, "model", used_model)
                 if d2:
                     data = d2
-                    used_model = getattr(repair, "model", used_model)
                     model_flow.append({"model": used_model, "mode": "repair"})
                     repair_used = True
             except Exception as e3:
@@ -848,23 +940,35 @@ async def gentest(
     t0 = time.monotonic()
     m = model or MODEL
     try:
-        comp = _openai_chat(
-            messages=[
-                {"role": "system", "content": PROMPT},
-                {"role": "user", "content": q},
-            ],
-            model=m,
-            max_tokens=OPENAI_MAX_TOKENS,
-            json_mode=bool(json),
-        )
+        if m.startswith("gpt-5"):
+            comp = _openai_responses(
+                messages=[
+                    {"role": "system", "content": PROMPT},
+                    {"role": "user", "content": q},
+                ],
+                model=m,
+                json_mode=bool(json)
+            )
+            used_model = getattr(comp, "model", m)
+            resp_msg = _msg_from_response(comp)
+        else:
+            comp = _openai_chat(
+                messages=[
+                    {"role": "system", "content": PROMPT},
+                    {"role": "user", "content": q},
+                ],
+                model=m, max_tokens=OPENAI_MAX_TOKENS, json_mode=bool(json)
+            )
+            used_model = getattr(comp, "model", m)
+            resp_msg = comp.choices[0].message
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-    msg = comp.choices[0].message
+    msg = resp_msg
     data, raw_text = _msg_to_data_and_raw(msg)
     gen_ms = int((time.monotonic() - t0) * 1000)
     resp = {
         "ok": True,
-        "model": m,
+        "model": used_model,
         "fallback": MODEL_FALLBACK,
         "json_mode": bool(json),
         "response_format": (OPENAI_JSON_MODE if bool(json) else "off"),
