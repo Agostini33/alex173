@@ -9,6 +9,7 @@ import secrets
 import shutil
 import sqlite3
 import time
+import traceback
 from urllib.parse import quote as _urlquote
 
 import jwt
@@ -17,6 +18,7 @@ import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 # --- базовое логирование настраиваемо через ENV ---
@@ -24,6 +26,15 @@ logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(message)s",
 )
+
+
+def safe_json(payload: dict, status: int = 200) -> JSONResponse:
+    return JSONResponse(
+        content=payload,
+        status_code=status,
+        media_type="application/json",
+    )
+
 
 # ============================
 # 🔐 Загрузка секретов из env
@@ -1058,203 +1069,209 @@ def _min_meta(meta: dict | None) -> dict | None:
 
 @app.post("/rewrite")
 async def rewrite(r: Req, request: Request):
-    debug_flag = (
-        WB_DEBUG
-        or request.query_params.get("debug") == "1"
-        or request.headers.get("X-Debug") == "1"
-    )
-    info = verify(request.headers.get("Authorization", "").replace("Bearer ", ""))
-    if not info:
-        info = {"sub": "anon", "quota": 3}  # 3 free
-    wb_meta: dict | None = None
-    wb_meta_min: dict | None = None
-    source_len = None
-    source_preview = ""
-    if info["quota"] <= 0:
-        return {"error": "NO_CREDITS", "wb_meta": wb_meta_min}
-    prompt = r.prompt.strip()
-    if prompt.startswith("http") and "wildberries.ru" in prompt:
-        fetched_text, meta = wb_card_fetch(prompt, debug=debug_flag)
-        wb_meta = meta
-        wb_meta_min = _min_meta(meta)
-        if fetched_text and len(fetched_text) >= 60:
-            source_len = len(fetched_text)
-            source_preview = fetched_text[:400]
-            prompt = fetched_text
     try:
-        t0 = time.monotonic()
-        if MODEL.startswith("gpt-5"):
-            comp = _openai_responses(
-                messages=[
-                    {"role": "system", "content": PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                model=MODEL,
-                json_mode=True,
-            )
-            used_model = getattr(comp, "model", MODEL)
-            model_flow = [{"model": used_model, "mode": "json"}]
-            msg = _msg_from_response(comp)
-        else:
-            comp = _openai_chat(
-                messages=[
-                    {"role": "system", "content": PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                model=MODEL,
-                max_tokens=OPENAI_MAX_TOKENS,
-                json_mode=True,
-            )
-            used_model = getattr(comp, "model", MODEL)
-            model_flow = [{"model": used_model, "mode": "json"}]
-            msg = comp.choices[0].message
-    except Exception as e:
-        resp = {"error": str(e)}
-        if source_len is not None:
-            resp["source_len"] = source_len
-            resp["source_preview"] = source_preview
-        resp["wb_meta"] = wb_meta_min
-        if debug_flag and wb_meta:
-            resp["wb_meta_trace"] = wb_meta.get("trace")
-        return resp
-    data, raw = _msg_to_data_and_raw(msg)
-    gen_ms = int((time.monotonic() - t0) * 1000)
-
-    repair_attempted = False
-    repair_used = False
-    repair_ms = 0
-    if not data:
-        # "Чинящий" проход на фолбэке — только если есть, что чинить
-        repair_attempted = True
-        repair_input = (raw or prompt or "").strip()
-        if len(repair_input) >= 30:
-            rt0 = time.monotonic()
-            try:
-                if MODEL_FALLBACK.startswith("gpt-5"):
-                    repair_resp = _openai_responses(
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": "Верни строго валидный JSON по схеме {title, bullets[6], keywords[20]} без комментариев и пояснений.",
-                            },
-                            {"role": "user", "content": repair_input[:8000]},
-                        ],
-                        model=MODEL_FALLBACK,
-                        json_mode=True,
-                    )
-                    d2, _raw2 = _msg_to_data_and_raw(_msg_from_response(repair_resp))
-                    used_model = getattr(repair_resp, "model", used_model)
-                else:
-                    repair = _openai_chat(
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": "Верни строго валидный JSON по схеме {title, bullets[6], keywords[20]} без комментариев и пояснений.",
-                            },
-                            {"role": "user", "content": repair_input[:8000]},
-                        ],
-                        model=MODEL_FALLBACK,
-                        max_tokens=OPENAI_MAX_TOKENS,
-                        json_mode=True,
-                    )
-                    d2, _raw2 = _msg_to_data_and_raw(repair.choices[0].message)
-                    used_model = getattr(repair, "model", used_model)
-                if d2:
-                    data = d2
-                    model_flow.append({"model": used_model, "mode": "repair"})
-                    repair_used = True
-            except Exception as e3:
-                logging.warning("Repair pass failed: %s", e3)
-            repair_ms = int((time.monotonic() - rt0) * 1000)
-        else:
-            resp = {
-                "error": "BAD_JSON_EMPTY",
-                "model_flow": model_flow,
-                "timings": {"gen_ms": gen_ms, "repair_ms": 0},
-            }
+        debug_flag = (
+            WB_DEBUG
+            or request.query_params.get("debug") == "1"
+            or request.headers.get("X-Debug") == "1"
+        )
+        info = verify(request.headers.get("Authorization", "").replace("Bearer ", ""))
+        if not info:
+            info = {"sub": "anon", "quota": 3}  # 3 free
+        wb_meta: dict | None = None
+        wb_meta_min: dict | None = None
+        source_len = None
+        source_preview = ""
+        if info["quota"] <= 0:
+            return safe_json({"error": "NO_CREDITS", "wb_meta": wb_meta_min})
+        prompt = r.prompt.strip()
+        if prompt.startswith("http") and "wildberries.ru" in prompt:
+            fetched_text, meta = wb_card_fetch(prompt, debug=debug_flag)
+            wb_meta = meta
+            wb_meta_min = _min_meta(meta)
+            if fetched_text and len(fetched_text) >= 60:
+                source_len = len(fetched_text)
+                source_preview = fetched_text[:400]
+                prompt = fetched_text
+        try:
+            t0 = time.monotonic()
+            if MODEL.startswith("gpt-5"):
+                comp = _openai_responses(
+                    messages=[
+                        {"role": "system", "content": PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    model=MODEL,
+                    json_mode=True,
+                )
+                used_model = getattr(comp, "model", MODEL)
+                model_flow = [{"model": used_model, "mode": "json"}]
+                msg = _msg_from_response(comp)
+            else:
+                comp = _openai_chat(
+                    messages=[
+                        {"role": "system", "content": PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    model=MODEL,
+                    max_tokens=OPENAI_MAX_TOKENS,
+                    json_mode=True,
+                )
+                used_model = getattr(comp, "model", MODEL)
+                model_flow = [{"model": used_model, "mode": "json"}]
+                msg = comp.choices[0].message
+        except Exception as e:
+            resp = {"error": str(e)}
             if source_len is not None:
                 resp["source_len"] = source_len
                 resp["source_preview"] = source_preview
             resp["wb_meta"] = wb_meta_min
             if debug_flag and wb_meta:
                 resp["wb_meta_trace"] = wb_meta.get("trace")
+            return safe_json(resp)
+        data, raw = _msg_to_data_and_raw(msg)
+        gen_ms = int((time.monotonic() - t0) * 1000)
+
+        repair_attempted = False
+        repair_used = False
+        repair_ms = 0
+        if not data:
+            # "Чинящий" проход на фолбэке — только если есть, что чинить
+            repair_attempted = True
+            repair_input = (raw or prompt or "").strip()
+            if len(repair_input) >= 30:
+                rt0 = time.monotonic()
+                try:
+                    if MODEL_FALLBACK.startswith("gpt-5"):
+                        repair_resp = _openai_responses(
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": "Верни строго валидный JSON по схеме {title, bullets[6], keywords[20]} без комментариев и пояснений.",
+                                },
+                                {"role": "user", "content": repair_input[:8000]},
+                            ],
+                            model=MODEL_FALLBACK,
+                            json_mode=True,
+                        )
+                        d2, _raw2 = _msg_to_data_and_raw(
+                            _msg_from_response(repair_resp)
+                        )
+                        used_model = getattr(repair_resp, "model", used_model)
+                    else:
+                        repair = _openai_chat(
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": "Верни строго валидный JSON по схеме {title, bullets[6], keywords[20]} без комментариев и пояснений.",
+                                },
+                                {"role": "user", "content": repair_input[:8000]},
+                            ],
+                            model=MODEL_FALLBACK,
+                            max_tokens=OPENAI_MAX_TOKENS,
+                            json_mode=True,
+                        )
+                        d2, _raw2 = _msg_to_data_and_raw(repair.choices[0].message)
+                        used_model = getattr(repair, "model", used_model)
+                    if d2:
+                        data = d2
+                        model_flow.append({"model": used_model, "mode": "repair"})
+                        repair_used = True
+                except Exception as e3:
+                    logging.warning("Repair pass failed: %s", e3)
+                repair_ms = int((time.monotonic() - rt0) * 1000)
+            else:
+                resp = {
+                    "error": "BAD_JSON_EMPTY",
+                    "model_flow": model_flow,
+                    "timings": {"gen_ms": gen_ms, "repair_ms": 0},
+                }
+                if source_len is not None:
+                    resp["source_len"] = source_len
+                    resp["source_preview"] = source_preview
+                resp["wb_meta"] = wb_meta_min
+                if debug_flag and wb_meta:
+                    resp["wb_meta_trace"] = wb_meta.get("trace")
+                if EXPOSE_MODEL_ERRORS:
+                    resp["model_used"] = used_model
+                return safe_json(resp)
+
+        # Валидация и финальный ответ
+        if not data or not _schema_ok(data):
+            resp = {
+                "error": "BAD_JSON",
+                "raw": (raw or "")[:2000],
+                "model_flow": model_flow,
+                "timings": {"gen_ms": gen_ms, "repair_ms": repair_ms},
+                "repair_attempted": repair_attempted,
+                "repair_used": repair_used,
+            }
             if EXPOSE_MODEL_ERRORS:
                 resp["model_used"] = used_model
-            return resp
+            if source_len is not None:
+                resp["source_len"] = source_len
+                resp["source_preview"] = source_preview
+            resp["wb_meta"] = wb_meta_min
+            if debug_flag and wb_meta:
+                resp["wb_meta_trace"] = wb_meta.get("trace")
+            return safe_json(resp)
 
-    # Валидация и финальный ответ
-    if not data or not _schema_ok(data):
+        info["quota"] -= 1
+        if info["sub"] in ACCOUNTS:
+            ACCOUNTS[info["sub"]]["quota"] = info["quota"]
+        out = dict(data)
+        desc_diag = None
+        desc_text = ""
+        if r.rewriteDescription:
+            source_text = prompt
+            instr = _desc_instructions(r.stylePrimary, r.styleSecondary, r.styleCustom)
+            sys = "Ты редактор маркетплейса. Перепиши связное ОПИСАНИЕ товара по инструкциям. Верни ТОЛЬКО текст описания, без пояснений."
+            user = f"Инструкции: {instr}\n\nИсходный текст карточки:\n{source_text}"
+            desc_text, desc_diag = generate_description_text(
+                client,
+                MODEL,
+                sys,
+                user,
+                DESC_TIMEOUT,
+                DESC_MAX_OUTPUT,
+                DESC_FALLBACKS,
+            )
+            desc_text = (desc_text or "").strip()
+            out["description"] = desc_text
+            out["desc_len"] = len(desc_text)
+
         resp = {
-            "error": "BAD_JSON",
-            "raw": (raw or "")[:2000],
+            "token": jwt.encode(info, SECRET, "HS256"),
+            "model_used": used_model,
             "model_flow": model_flow,
             "timings": {"gen_ms": gen_ms, "repair_ms": repair_ms},
             "repair_attempted": repair_attempted,
             "repair_used": repair_used,
+            **out,
         }
-        if EXPOSE_MODEL_ERRORS:
-            resp["model_used"] = used_model
         if source_len is not None:
             resp["source_len"] = source_len
             resp["source_preview"] = source_preview
         resp["wb_meta"] = wb_meta_min
         if debug_flag and wb_meta:
             resp["wb_meta_trace"] = wb_meta.get("trace")
-        return resp
-
-    info["quota"] -= 1
-    if info["sub"] in ACCOUNTS:
-        ACCOUNTS[info["sub"]]["quota"] = info["quota"]
-    out = dict(data)
-    desc_diag = None
-    desc_text = ""
-    if r.rewriteDescription:
-        source_text = prompt
-        instr = _desc_instructions(r.stylePrimary, r.styleSecondary, r.styleCustom)
-        sys = "Ты редактор маркетплейса. Перепиши связное ОПИСАНИЕ товара по инструкциям. Верни ТОЛЬКО текст описания, без пояснений."
-        user = f"Инструкции: {instr}\n\nИсходный текст карточки:\n{source_text}"
-        desc_text, desc_diag = generate_description_text(
-            client,
-            MODEL,
-            sys,
-            user,
-            DESC_TIMEOUT,
-            DESC_MAX_OUTPUT,
-            DESC_FALLBACKS,
-        )
-        if desc_text:
-            out["description"] = desc_text
-
-    resp = {
-        "token": jwt.encode(info, SECRET, "HS256"),
-        "model_used": used_model,
-        "model_flow": model_flow,
-        "timings": {"gen_ms": gen_ms, "repair_ms": repair_ms},
-        "repair_attempted": repair_attempted,
-        "repair_used": repair_used,
-        **out,
-    }
-    if source_len is not None:
-        resp["source_len"] = source_len
-        resp["source_preview"] = source_preview
-    resp["wb_meta"] = wb_meta_min
-    if debug_flag and wb_meta:
-        resp["wb_meta_trace"] = wb_meta.get("trace")
-    if r.rewriteDescription:
-        if desc_text:
-            resp["desc_len"] = len(desc_text)
+        if r.rewriteDescription and desc_diag is not None:
+            resp["desc_diag"] = desc_diag
             try:
                 resp["desc_model_used"] = desc_diag["desc_model_flow"][-1]["model"]
             except Exception:
                 pass
-            resp["desc_diag"] = desc_diag
-        else:
-            if desc_diag:
-                resp["desc_diag"] = desc_diag
+            if not desc_text:
                 resp["desc_error"] = desc_diag.get("desc_error")
-            else:
-                resp["desc_error"] = "no_desc"
-    return resp
+        return safe_json(resp)
+    except Exception as e:
+        logging.error("rewrite() failed: %s", e)
+        logging.error("traceback:\n%s", traceback.format_exc())
+        err = {
+            "error": "INTERNAL_SERVER_ERROR",
+            "message": str(e)[:500],
+        }
+        return safe_json(err, status=500)
 
 
 # --- быстрая диагностика соединения с LLM (без WB) ---
@@ -1346,6 +1363,11 @@ async def models(prefix: str = "gpt"):
         return {"ok": True, "count": len(out), "models": sorted(out)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+@app.get("/health")
+async def health():
+    return {"ok": True}
 
 
 @app.get("/healthz")
